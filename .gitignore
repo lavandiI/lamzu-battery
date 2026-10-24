@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Runtime data (status, logs, overlay position)
+data/
+
+# Virtual environments and local secrets
+.venv/
+venv/
+.env
