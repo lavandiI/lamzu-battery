@@ -106,7 +106,7 @@ class BatteryReading:
     @property
     def protocol_text(self) -> str:
         return {"compx": "Compx", "aurora": "Aurora"}.get(
-            self.protocol, self.protocol or "неизвестно"
+            self.protocol, self.protocol or "unknown"
         )
 
 

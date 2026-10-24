@@ -38,6 +38,8 @@ real Aurora hardware here.
 - a condensed font is used for the three-digit `100`, so the digits stay large;
 - bright colours: cyan — normal, yellow — ≤ 30%, red — ≤ 15%, green — charging,
   light blue — no fresh data;
+- **UI language switch** between English and Russian (menu → Language); the
+  choice is remembered, and the system language is used on first run;
 - **charging animation**: the green tray digits pulse, and a highlight moves
   across the battery bar in the desktop overlay;
 - tooltip with model, percentage and state (`discharging`, `charging`, `full`);
@@ -94,6 +96,7 @@ Next to the executable:
 
 ```
 data\status.json   — last state (read by the desktop overlay)
+data\settings.json — selected UI language
 data\app.log       — log
 data\overlay.json  — desktop overlay position
 ```

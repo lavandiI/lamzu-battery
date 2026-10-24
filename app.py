@@ -23,6 +23,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
+import i18n
 import pystray
 from PIL import Image, ImageDraw, ImageFont
 
@@ -66,6 +67,7 @@ def _pick_data_dir() -> Path:
 DATA_DIR = _pick_data_dir()
 STATUS_FILE = DATA_DIR / "status.json"
 OVERLAY_POS_FILE = DATA_DIR / "overlay.json"
+SETTINGS_FILE = DATA_DIR / "settings.json"
 LOG_FILE = DATA_DIR / "app.log"
 
 COLOR_NORMAL = (0, 229, 255, 255)       # яркий циан
@@ -83,6 +85,29 @@ POLL_INTERVAL_OFFLINE = 10 * 60
 POLL_INTERVAL_FIRST = 15
 
 log = logging.getLogger("lamzu_tray")
+
+
+def _load_language() -> str:
+    """Прочитать выбранный язык; при первом запуске — язык системы."""
+    try:
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        language = data.get("language")
+    except (OSError, ValueError, TypeError, AttributeError):
+        language = None
+    return i18n.normalize_language(language or i18n.detect_system_language())
+
+
+def _save_language(language: str) -> None:
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = SETTINGS_FILE.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps({"language": language}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(tmp, SETTINGS_FILE)
+    except OSError:
+        log.debug("could not save settings", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -227,20 +252,6 @@ def _rgba_hex(color: tuple[int, int, int, int]) -> str:
     return f"#{color[0]:02X}{color[1]:02X}{color[2]:02X}"
 
 
-def _human_age(seconds: float) -> str:
-    seconds = max(0, int(seconds))
-    if seconds < 60:
-        return "только что"
-    minutes = seconds // 60
-    if minutes < 60:
-        return f"{minutes} мин"
-    hours, minutes = divmod(minutes, 60)
-    if hours < 24:
-        return f"{hours} ч {minutes} мин" if minutes else f"{hours} ч"
-    days, hours = divmod(hours, 24)
-    return f"{days} д {hours} ч" if hours else f"{days} д"
-
-
 def _status_color(percent: Optional[int], state: Optional[int], online: bool) -> str:
     if percent is None or not online:
         return "#B8D4FF"
@@ -352,21 +363,44 @@ class BatteryTray:
             pystray.MenuItem(lambda item: self._display_name(), None, enabled=False),
             pystray.MenuItem(lambda item: self._menu_status(), None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Обновить сейчас", self._on_refresh, default=True),
             pystray.MenuItem(
-                "Показывать на рабочем столе",
+                lambda item: i18n.tr("menu.refresh"),
+                self._on_refresh,
+                default=True,
+            ),
+            pystray.MenuItem(
+                lambda item: i18n.tr("menu.desktop"),
                 self._on_toggle_overlay,
                 checked=lambda item: self._overlay_running(),
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
-                "Запускать при входе",
+                lambda item: i18n.tr("menu.autostart"),
                 self._on_toggle_autostart,
                 checked=lambda item: autostart_enabled(),
             ),
-            pystray.MenuItem("Открыть журнал", self._on_open_logs),
+            pystray.MenuItem(
+                lambda item: i18n.tr("menu.logs"), self._on_open_logs
+            ),
+            pystray.MenuItem(
+                lambda item: i18n.tr("menu.language"),
+                pystray.Menu(
+                    pystray.MenuItem(
+                        i18n.LANGUAGE_NAMES["ru"],
+                        lambda icon, item: self._on_set_language(icon, "ru"),
+                        checked=lambda item: i18n.get_language() == "ru",
+                        radio=True,
+                    ),
+                    pystray.MenuItem(
+                        i18n.LANGUAGE_NAMES["en"],
+                        lambda icon, item: self._on_set_language(icon, "en"),
+                        checked=lambda item: i18n.get_language() == "en",
+                        radio=True,
+                    ),
+                ),
+            ),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Выход", self._on_quit),
+            pystray.MenuItem(lambda item: i18n.tr("menu.exit"), self._on_quit),
         )
 
     def _display_name(self) -> str:
@@ -375,11 +409,14 @@ class BatteryTray:
 
     def _menu_status(self) -> str:
         if self._last is None:
-            return "Нет связи с мышью"
+            return i18n.tr("status.no_mouse")
         if self._online:
-            return f"{self._last.percent}% · {self._last.state_text}"
-        age = _human_age(time.time() - self._last_ok)
-        return f"{self._last.percent}% · нет связи ({age})"
+            state = i18n.state_text(self._last.state, self._last.percent)
+            return f"{self._last.percent}% · {state}"
+        age = i18n.human_age(time.time() - self._last_ok)
+        return i18n.tr(
+            "status.offline", percent=self._last.percent, age=age
+        )
 
     # --- опрос ------------------------------------------------------------
 
@@ -424,7 +461,7 @@ class BatteryTray:
                     log.info(
                         "battery: %s%% (%s), %s, %s",
                         reading.percent,
-                        reading.state_text,
+                        i18n.state_text(reading.state, reading.percent),
                         name,
                         reading.protocol_text,
                     )
@@ -494,11 +531,17 @@ class BatteryTray:
     def _tooltip(self) -> str:
         name = self._display_name()
         if self._last is None:
-            return f"{name}: нет связи — пошевелите мышью"
+            return i18n.tr("tooltip.no_connection", name=name)
         if self._online:
-            return f"{name}: {self._last.percent}% ({self._last.state_text})"
-        age = _human_age(time.time() - self._last_ok)
-        return f"{name}: {self._last.percent}% (нет связи, {age} назад)"
+            state = i18n.state_text(self._last.state, self._last.percent)
+            return f"{name}: {self._last.percent}% ({state})"
+        age = i18n.human_age(time.time() - self._last_ok)
+        return i18n.tr(
+            "tooltip.offline",
+            name=name,
+            percent=self._last.percent,
+            age=age,
+        )
 
     def _maybe_notify(self, reading: BatteryReading) -> None:
         name = self._display_name()
@@ -509,15 +552,22 @@ class BatteryTray:
             return
         if reading.full:
             if not self._full_notified:
-                self._notify(f"{name}: {reading.percent}%", "Мышь заряжена")
+                self._notify(
+                    i18n.tr(
+                        "notify.full_body", name=name, percent=reading.percent
+                    ),
+                    i18n.tr("notify.full_title"),
+                )
                 self._full_notified = True
             return
 
         self._full_notified = False
         if reading.percent <= 15 and not self._low_notified:
             self._notify(
-                f"{name}: {reading.percent}% — пора зарядить мышь",
-                "Низкий заряд",
+                i18n.tr(
+                    "notify.low_body", name=name, percent=reading.percent
+                ),
+                i18n.tr("notify.low_title"),
             )
             self._low_notified = True
         elif reading.percent > 20:
@@ -535,6 +585,7 @@ class BatteryTray:
         payload = {
             "app": APP_NAME,
             "display_name": self._display_name(),
+            "language": i18n.get_language(),
             "model": self._last.model if self._last else None,
             "protocol": self._last.protocol if self._last else None,
             "product": self._last.product if self._last else None,
@@ -542,11 +593,18 @@ class BatteryTray:
             "online": self._online,
             "percent": self._last.percent if self._last else None,
             "state": self._last.state if self._last else None,
-            "state_text": self._last.state_text if self._last else None,
+            "state_text": (
+                i18n.state_text(self._last.state, self._last.percent)
+                if self._last
+                else None
+            ),
             "charging": bool(self._last and self._last.charging),
             "full": bool(self._last and self._last.full),
             "updated_unix": int(self._last_ok) if self._last else None,
             "polled_unix": int(time.time()),
+            # Пока приложение работает, показание остаётся свежим до
+            # следующего опроса (30 мин в обычном режиме, 1 мин на зарядке).
+            "stale_after": int(max(180, self._interval() * 1.5 + 60)),
         }
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -607,6 +665,18 @@ class BatteryTray:
         except OSError:
             log.exception("could not open data folder")
 
+    def _on_set_language(self, icon, language: str) -> None:
+        language = i18n.set_language(language)
+        _save_language(language)
+        log.info("language = %s", language)
+        # Обновляем подсказку, состояние для оверлея и все подписи меню.
+        self._apply()
+        self._write_status()
+        try:
+            icon.update_menu()
+        except Exception:
+            log.debug("could not update tray menu", exc_info=True)
+
     def _on_quit(self, icon, item) -> None:
         self._stop.set()
         icon.stop()
@@ -647,6 +717,7 @@ class BatteryTray:
 def run_overlay() -> int:
     import tkinter as tk
 
+    i18n.set_language(_load_language())
     mutex = _acquire_mutex(MUTEX_OVERLAY)
     if mutex is None:
         return 0
@@ -705,8 +776,8 @@ def run_overlay() -> int:
         font=("Segoe UI Bold", 26),
     )
     state_item = canvas.create_text(
-        (105, 19), anchor="nw", text="нет связи", fill="#B8D4FF",
-        font=("Segoe UI", 8),
+        (105, 19), anchor="nw", text=i18n.tr("overlay.no_connection"),
+        fill="#B8D4FF", font=("Segoe UI", 8),
     )
 
     # Батарейка
@@ -739,7 +810,7 @@ def run_overlay() -> int:
         root.destroy()
 
     menu = tk.Menu(root, tearoff=0)
-    menu.add_command(label="Закрыть", command=close_overlay)
+    menu.add_command(label=i18n.tr("overlay.close"), command=close_overlay)
 
     def popup(event):
         try:
@@ -786,10 +857,19 @@ def run_overlay() -> int:
                 cache["data"] = data
 
         data = cache["data"]
+        if data is not None:
+            language = data.get("language")
+            if language in i18n.LANGUAGES and language != i18n.get_language():
+                i18n.set_language(language)
+                try:
+                    menu.entryconfigure(0, label=i18n.tr("overlay.close"))
+                except tk.TclError:
+                    pass
+
         if data is None:
             percent, state, online = None, None, False
             charging = full = False
-            state_text = "нет данных"
+            state_text = i18n.tr("overlay.no_data")
             display_name = APP_NAME
         else:
             percent = data.get("percent")
@@ -797,21 +877,22 @@ def run_overlay() -> int:
             online = bool(data.get("online"))
             charging = bool(data.get("charging"))
             full = bool(data.get("full"))
-            state_text = data.get("state_text") or ""
             display_name = data.get("display_name") or APP_NAME
             age = now - (data.get("updated_unix") or 0)
-            if online and age > 180:
+            stale_after = data.get("stale_after") or 180
+            if online and age > stale_after:
                 online = False
                 charging = False
                 full = False
-                state_text = "данные устарели"
+                state_text = i18n.tr("overlay.stale")
             elif not online:
                 charging = False
                 full = False
-                if percent is not None:
-                    state_text = "нет связи"
-            if not state_text:
-                state_text = "нет связи"
+                state_text = i18n.tr("overlay.no_connection")
+            elif state is not None:
+                state_text = i18n.state_text(state, percent)
+            else:
+                state_text = i18n.tr("overlay.no_data")
 
         color = _status_color(percent, state, online)
         phase = 0.0
@@ -875,9 +956,14 @@ def _save_overlay_pos(x: int, y: int) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
+    i18n.set_language(_load_language())
     parser = argparse.ArgumentParser(description=APP_NAME)
-    parser.add_argument("--overlay", action="store_true", help="окно на рабочем столе")
-    parser.add_argument("--debug", action="store_true", help="подробный журнал")
+    parser.add_argument(
+        "--overlay", action="store_true", help=i18n.tr("cli.overlay_help")
+    )
+    parser.add_argument(
+        "--debug", action="store_true", help=i18n.tr("cli.debug_help")
+    )
     args = parser.parse_args()
 
     if args.overlay:
