@@ -3,6 +3,7 @@
 <img src="docs/icon.png" width="96" align="right" alt="LAMZU Battery">
 
 [![release](https://img.shields.io/github/v/release/lavandiI/lamzu-battery?label=release)](https://github.com/lavandiI/lamzu-battery/releases/latest)
+[![tests](https://github.com/lavandiI/lamzu-battery/actions/workflows/tests.yml/badge.svg)](https://github.com/lavandiI/lamzu-battery/actions/workflows/tests.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)](#)
 
