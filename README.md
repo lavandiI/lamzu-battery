@@ -11,6 +11,8 @@ system tray. Supports the Compx and Aurora HID protocols, needs no driver and
 uses read-only battery queries. Prebuilt `LamzuBattery.exe` is available on the
 [releases page](https://github.com/lavandiI/lamzu-battery/releases/latest).
 
+**[Скачать LamzuBattery.exe для Windows 10/11](https://github.com/lavandiI/lamzu-battery/releases/latest/download/LamzuBattery.exe)**
+
 ---
 
 Индикатор заряда мышей **LAMZU** в системном трее Windows 10/11.
