@@ -7,157 +7,153 @@
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)](#)
 
-**English:** a tiny battery indicator for LAMZU mice that lives in the Windows
-system tray. Supports the Compx and Aurora HID protocols, needs no driver and
-uses read-only battery queries. Prebuilt `LamzuBattery.exe` is available on the
-[releases page](https://github.com/lavandiI/lamzu-battery/releases/latest).
+**English** | [Русский](README.ru.md)
 
-**[Скачать LamzuBattery.exe для Windows 10/11](https://github.com/lavandiI/lamzu-battery/releases/latest/download/LamzuBattery.exe)**
+A tiny battery indicator for LAMZU mice that lives in the Windows system tray.
+It talks directly to the USB dongle or cable, requires no driver and does not
+need the official Lamzu software to be running.
+
+**[Download LamzuBattery.exe for Windows 10/11](https://github.com/lavandiI/lamzu-battery/releases/latest/download/LamzuBattery.exe)**
 
 ---
 
-Индикатор заряда мышей **LAMZU** в системном трее Windows 10/11.
-Работает напрямую с USB-донглом или кабелем, без драйвера и без запущенного
-официального ПО Lamzu.
+![Tray icon examples](docs/preview.png)
 
-![Пример иконок в трее](docs/preview.png)
+The app is universal: the model is detected from VID/PID and the product
+string, and the protocol from the control HID interface. Both known Lamzu
+families are supported:
 
-Приложение универсальное: модель определяется по VID/PID и product string,
-а протокол — по управляющему HID-интерфейсу. Поддерживаются обе известные
-семейства Lamzu:
+- **Compx** — Thorn, Atlantis, Maya and other Compx/Nordic mice;
+- **Aurora** — Maya X, Inca, Paro, Maya Champion and other recent models.
 
-- **Compx** — Thorn, Atlantis, Maya и другие мыши на Compx/Nordic;
-- **Aurora** — Maya X, Inca, Paro, Maya Champion и другие новые модели.
-
-Проверено на LAMZU Thorn в режиме зарядки по кабелю (`3554:F50F`, Compx).
-Поддержка Aurora добавлена по открытым описаниям протокола
+Tested on a LAMZU Thorn while charging over cable (`3554:F50F`, Compx).
+Aurora support is based on public protocol descriptions
 ([mouse_tray](https://github.com/Fan4Metal/mouse_tray),
-[lamzu-ctl](https://github.com/anany1702/lamzu-ctl)), но на реальном
-Aurora-устройстве здесь не проверялась.
+[lamzu-ctl](https://github.com/anany1702/lamzu-ctl)), but has not been tested on
+real Aurora hardware here.
 
-## Что умеет
+## Features
 
-- заряд **максимально крупными цифрами** прямо на иконке в трее;
-- для трёхзначного «100» используется узкий шрифт, поэтому цифры не мельчают;
-- яркий цвет: циан — норма, жёлтый — ≤ 30 %, красный — ≤ 15 %, зелёный — зарядка,
-  светло-голубой — нет свежих данных;
-- **анимация зарядки**: зелёные цифры в трее плавно пульсируют, а в окне на
-  рабочем столе по батарейке бежит блик;
-- подсказка при наведении: модель, процент и состояние
-  («разряд», «заряжается», «заряжена»);
-- в меню показывается определённая модель, например «LAMZU Thorn»;
-- уведомление при низком заряде и при полной зарядке;
-- необязательное окно на рабочем столе (перетаскивается, всегда сверху);
-- автозапуск при входе в Windows;
-- сразу замечает подключение/отключение кабеля или донгла и обновляет состояние;
-- не требует прав администратора и ничего не устанавливает в систему.
+- battery percentage as **large digits** directly on the tray icon;
+- a condensed font is used for the three-digit `100`, so the digits stay large;
+- bright colours: cyan — normal, yellow — ≤ 30%, red — ≤ 15%, green — charging,
+  light blue — no fresh data;
+- **charging animation**: the green tray digits pulse, and a highlight moves
+  across the battery bar in the desktop overlay;
+- tooltip with model, percentage and state (`discharging`, `charging`, `full`);
+- the menu shows the detected model, for example `LAMZU Thorn`;
+- notifications on low battery and when fully charged;
+- optional desktop overlay (draggable, always on top);
+- start with Windows;
+- detects cable/dongle plug and unplug immediately and refreshes the state;
+- no administrator rights and nothing installed system-wide.
 
-Обновление — **раз в 30 минут**. Пока идёт зарядка, приложение проверяет
-состояние раз в минуту, чтобы не пропустить 100 %. Если мышь спит и не
-отдала значение, повтор будет через 10 минут; первое значение после запуска
-ловится каждые 15 секунд. Подключение или отключение кабеля/донгла
-отслеживается отдельно и обновляет состояние сразу. В любой момент можно
-нажать **«Обновить сейчас»** в меню.
+Updates every **30 minutes**. While charging, it checks once a minute so it does
+not miss 100%. If the mouse is asleep and does not answer, it retries in 10
+minutes; the first reading after startup is attempted every 15 seconds. Cable
+and dongle changes are watched separately and refresh the state immediately.
+You can also press **Refresh now** in the menu at any time.
 
-## Быстрый старт
+## Quick start
 
-1. Скачайте `LamzuBattery.exe` со страницы
-   [Releases](https://github.com/lavandiI/lamzu-battery/releases/latest).
-   Python и установка не нужны — это один исполняемый файл.
-2. Запустите его. Иконка появится в области уведомлений. Windows 11 часто прячет
-   новые иконки в «^» — перетащите её оттуда на панель задач.
-3. Правый клик по иконке — меню: обновить, окно на рабочем столе, автозапуск, выход.
+1. Download `LamzuBattery.exe` from the
+   [Releases](https://github.com/lavandiI/lamzu-battery/releases/latest) page.
+   Python and installation are not required — it is a single executable.
+2. Run it. The icon appears in the notification area. Windows 11 often hides
+   new icons under “^” — drag it onto the taskbar.
+3. Right-click the icon for the menu: refresh, desktop overlay, autostart, exit.
 
-Официальное ПО Lamzu можно не запускать: настройки мыши хранятся в её памяти.
-Файл не подписан, поэтому Windows SmartScreen может показать предупреждение —
-это обычное поведение для небольших open-source программ.
+You do not need to run the official Lamzu software: mouse settings are stored on
+the device. The file is unsigned, so Windows SmartScreen may show a warning —
+this is normal for small open-source projects.
 
-## Какие модели поддерживаются
+## Supported models
 
-| Семейство | Примеры | Протокол | Статус |
+| Family | Examples | Protocol | Status |
 | --- | --- | --- | --- |
-| Compx | Thorn, Atlantis, Maya, 1K/4K/8K-донглы `3554:F50D/F50F/F510` | report ID 8, usage page `0xFF02` | Thorn проверен; остальные — по общему протоколу Compx |
-| Aurora | Maya X (`373E:001E/001C`), Inca (`37B0:0010/0009`), Paro, Maya Champion | feature report, usage page `0xFFFF`, интерфейс 2 | по открытому протоколу, на hardware не проверялось |
+| Compx | Thorn, Atlantis, Maya, 1K/4K/8K dongles `3554:F50D/F50F/F510` | report ID 8, usage page `0xFF02` | Thorn tested; others use the common Compx protocol |
+| Aurora | Maya X (`373E:001E/001C`), Inca (`37B0:0010/0009`), Paro, Maya Champion | feature report, usage page `0xFFFF`, interface 2 | based on the public protocol, not tested on hardware |
 
-Модель берётся из product string («LAMZU THORN» → «Thorn») или из таблицы
-известных VID:PID. Если мышь подключена через донгл, который представляется
-просто как «Receiver», приложение показывает нейтральное «LAMZU Battery».
-При подключении кабелем модель обычно определяется точнее.
+The model comes from the product string (`LAMZU THORN` → `Thorn`) or from a
+table of known VID:PIDs. If the mouse is connected through a dongle that
+identifies itself simply as `Receiver`, the app shows the neutral
+`LAMZU Battery` name. With a cable connected the model is usually detected more
+reliably.
 
-## Почему значение иногда светло-голубое
+## Why the value sometimes turns light blue
 
-Мышь засыпает при простое и не отвечает на запросы, пока её не пошевелят.
-Приложение показывает последнее известное значение светло-голубым. Пошевелите
-мышь и нажмите **«Обновить сейчас»** — значение обновится сразу. Без ручного
-обновления следующая попытка будет через 10 минут (если мышь спала) или через
-30 минут (обычный режим). Это ограничение железа, а не ошибка.
+The mouse sleeps when idle and does not answer queries until it is moved. The
+app shows the last known value in light blue. Move the mouse and press
+**Refresh now** — the value updates immediately. Without a manual refresh, the
+next attempt is in 10 minutes (if the mouse was asleep) or 30 minutes (normal
+mode). This is a hardware limitation, not a bug.
 
-## Где хранятся данные
+## Where data is stored
 
-Рядом с exe:
+Next to the executable:
 
 ```
-data\status.json   — последнее состояние (его читает окно на рабочем столе)
-data\app.log       — журнал
-data\overlay.json  — позиция окна на рабочем столе
+data\status.json   — last state (read by the desktop overlay)
+data\app.log       — log
+data\overlay.json  — desktop overlay position
 ```
 
-Если папка с exe недоступна для записи (например, `Program Files`),
-используется `%LOCALAPPDATA%\LamzuBattery`.
+If the executable directory is not writable (for example, `Program Files`),
+`%LOCALAPPDATA%\LamzuBattery` is used instead.
 
-## Автозапуск
+## Autostart
 
-Меню → **Запускать при входе**. Добавляется значение `LamzuBattery` в
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Повторное нажатие
-выключает автозапуск. Прав администратора не нужно.
+Menu → **Start with Windows**. Adds a `LamzuBattery` value under
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Pressing it again disables
+autostart. Administrator rights are not required.
 
-При первом запуске новой версии старый автозапуск `LamzuThornBattery`
-автоматически переносится на `LamzuBattery`.
+On the first run of the new version, the old `LamzuThornBattery` autostart entry
+is migrated to `LamzuBattery` automatically.
 
-## Удаление
+## Uninstall
 
-1. Меню → **Выход**.
-2. Если автозапуск был включён — сначала выключите его в меню.
-3. Удалите папку с программой.
+1. Menu → **Exit**.
+2. If autostart was enabled, turn it off in the menu first.
+3. Delete the program folder.
 
-## Как это работает
+## How it works
 
-Драйвер не нужен: мышь или донгл предоставляют обычный HID-интерфейс с
-vendor-defined usage page. Используются только read-only команды чтения
-заряда, как в официальном ПО.
+No driver is needed: the mouse or dongle exposes a regular HID interface with a
+vendor-defined usage page. Only read-only battery queries are used, just like
+the official software.
 
 ### Compx
 
-| Поле | Значение |
+| Field | Value |
 | --- | --- |
-| VID:PID | `3554:F50D` (1K-донгл), `3554:F50F` (кабель/зарядка), `3554:F510` (4K/8K-донгл, предварительно) |
+| VID:PID | `3554:F50D` (1K dongle), `3554:F50F` (cable/charging), `3554:F510` (4K/8K dongle, tentative) |
 | HID usage page | `0xFF02` |
-| Report ID | `8`, длина 17 байт |
-| Команда | `4` — battery / charging status |
-| Запрос | `08 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 49` |
-| Ответ | `08 04 00 00 00 02 <процент> <состояние> ... <checksum>` |
-| Состояние | `0` — разряд, `1` — зарядка, `2` — заряжено |
+| Report ID | `8`, 17 bytes |
+| Command | `4` — battery / charging status |
+| Request | `08 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 49` |
+| Response | `08 04 00 00 00 02 <percent> <state> ... <checksum>` |
+| State | `0` — discharging, `1` — charging, `2` — full |
 
-Контрольная сумма: `(0x55 - сумма первых 16 байт) & 0xFF`.
+Checksum: `(0x55 - sum(first 16 bytes)) & 0xFF`.
 
 ### Aurora
 
-| Поле | Значение |
+| Field | Value |
 | --- | --- |
 | VID:PID | `373E:001E/001C` (Maya X), `37B0:0010/0009` (Inca), Paro, Maya Champion |
-| HID usage page | `0xFFFF`, интерфейс `2` |
-| Отчёт | 65-байтовый feature report с report ID `0` |
-| Новая команда | `0x83` в байте 6 |
-| Старая команда | `0x8F` в байте 3 (запасной вариант) |
-| Ответ | тег `0xA1`; состояние и процент в байтах 7/8 (новый) или 5/6 (старый) |
-| Состояние | `0` — разряд, `1` — зарядка, `2` — заряжено |
+| HID usage page | `0xFFFF`, interface `2` |
+| Report | 65-byte feature report with report ID `0` |
+| Current command | `0x83` at byte 6 |
+| Legacy command | `0x8F` at byte 3 (fallback) |
+| Response | tag `0xA1`; state and percent at bytes 7/8 (current) or 5/6 (legacy) |
+| State | `0` — discharging, `1` — charging, `2` — full |
 
-Команды только читают состояние. Настройки, DPI, профили, polling rate и
-прошивка не изменяются.
+The commands only read state. Settings, DPI, profiles, polling rate and firmware
+are not modified.
 
-## Сборка из исходников
+## Building from source
 
-Нужен Python 3.10+ и интернет для установки пакетов:
+Requires Python 3.10+ and internet access to install packages:
 
 ```bat
 git clone https://github.com/lavandiI/lamzu-battery.git
@@ -167,56 +163,56 @@ python make_icon.py
 build.bat
 ```
 
-Готовый файл: `dist\LamzuBattery.exe` (один файл, Python внутри не нужен).
+Result: `dist\LamzuBattery.exe` (a single file, no Python installation needed).
 
-Для запуска из исходников:
+Run from source:
 
 ```bat
 pythonw app.py
 ```
 
-Тесты (парсеры протоколов и раскладка запросов, без обращения к железу):
+Tests (protocol parsers and request layouts, no hardware access):
 
 ```bat
 python -m pytest -q
 ```
 
-Диагностика (покажет все Lamzu HID-интерфейсы, модель и протокол, попробует
-прочитать заряд):
+Diagnostics (lists all Lamzu HID interfaces, model and protocol, and tries to
+read the battery):
 
 ```bat
 python diagnose.py
 ```
 
-## Ограничения
+## Limitations
 
-- Только Windows.
-- Протокол Aurora реализован по открытым описаниям, но не проверялся на
-  реальной Aurora-мыши. Если ваша модель не отвечает, пришлите вывод
-  `python diagnose.py`.
-- Поддержка 4K/8K-донгла Compx (`F510`) заявлена предварительно: протокол
-  Compx обычно тот же, но на конкретном донгле не проверялся.
-- Через донгл модель может не определиться, если он представляется как
-  «Receiver»; заряд при этом всё равно читается.
-- Если мышь выключена или донгл выдернут, приложение показывает «?».
-- Антивирус может ругаться на неподписанный PyInstaller-exe — это обычное
-  предупреждение для самосборных программ.
+- Windows only.
+- Aurora is implemented from public descriptions and has not been tested on a
+  real Aurora mouse. If your model does not respond, please attach the output of
+  `python diagnose.py` to an issue.
+- Compx 4K/8K dongle support (`F510`) is tentative: the Compx protocol is
+  usually the same, but it has not been tested on that specific dongle.
+- The model may not be detected through a dongle that identifies itself as
+  `Receiver`; the battery percentage is still read.
+- If the mouse is off or the dongle is unplugged, the app shows `?`.
+- Antivirus software may flag an unsigned PyInstaller executable — this is a
+  common warning for self-built applications.
 
-## Альтернативы
+## Alternatives
 
-Если не хочется собирать самому, существуют готовые универсальные
-трей-индикаторы: [HaloBattery](https://github.com/HeyOkay/HaloBattery),
-[mouse_tray](https://github.com/Fan4Metal/mouse_tray) и
-[lamzu-ctl](https://github.com/anany1702/lamzu-ctl). Этот проект не тянет
-лишних зависимостей и рассчитан именно на Lamzu.
+If you do not want to build it yourself, there are universal tray indicators:
+[HaloBattery](https://github.com/HeyOkay/HaloBattery),
+[mouse_tray](https://github.com/Fan4Metal/mouse_tray) and
+[lamzu-ctl](https://github.com/anany1702/lamzu-ctl). This project has few
+dependencies and is focused specifically on Lamzu.
 
-## Участие в проекте
+## Contributing
 
-Issues и pull requests приветствуются. Если ваша модель Lamzu не определяется
-или не отдаёт заряд, приложите к issue вывод `python diagnose.py` и модель
-мыши — это сильно упрощает добавление поддержки.
+Issues and pull requests are welcome. If your Lamzu model is not detected or
+does not report its battery, include the output of `python diagnose.py` and the
+mouse model in the issue — it makes adding support much easier.
 
-## Лицензия
+## License
 
-[MIT](LICENSE). Проект не связан с компанией LAMZU; используются только
-публично описанные read-only HID-команды чтения заряда.
+[MIT](LICENSE). This project is not affiliated with LAMZU; it uses only
+publicly documented read-only HID battery queries.
