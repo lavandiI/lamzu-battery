@@ -78,11 +78,11 @@ COLOR_CHARGE_BRIGHT = (205, 255, 225, 255)  # верхняя точка пуль
 COLOR_STALE = (184, 212, 255, 255)      # светло-голубой вместо тусклого серого
 
 # Обычное обновление — раз в 30 минут. Во время зарядки чаще, чтобы
-# не пропустить 100%; пока нет первого значения — тоже чаще.
+# не пропустить 100%; после неудачного опроса — каждые 20 секунд, чтобы
+# быстрее поймать проснувшуюся мышь.
 POLL_INTERVAL = 30 * 60
 POLL_INTERVAL_CHARGING = 60
-POLL_INTERVAL_OFFLINE = 10 * 60
-POLL_INTERVAL_FIRST = 15
+POLL_INTERVAL_OFFLINE = 20
 
 log = logging.getLogger("lamzu_tray")
 
@@ -440,11 +440,9 @@ class BatteryTray:
                 self._poll()
 
     def _interval(self) -> float:
-        if self._last is None:
-            return POLL_INTERVAL_FIRST
-        if not self._online:
-            # Спящая/отключённая мышь: не долбить её каждую минуту, даже
-            # если последнее состояние было «заряжается».
+        if self._last is None or not self._online:
+            # Спящая/отключённая мышь или ещё нет первого ответа: пробуем
+            # чаще, чтобы быстрее поймать пробуждение.
             return POLL_INTERVAL_OFFLINE
         if self._last.charging:
             return POLL_INTERVAL_CHARGING

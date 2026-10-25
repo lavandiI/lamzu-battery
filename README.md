@@ -51,10 +51,10 @@ real Aurora hardware here.
 - no administrator rights and nothing installed system-wide.
 
 Updates every **30 minutes**. While charging, it checks once a minute so it does
-not miss 100%. If the mouse is asleep and does not answer, it retries in 10
-minutes; the first reading after startup is attempted every 15 seconds. Cable
-and dongle changes are watched separately and refresh the state immediately.
-You can also press **Refresh now** in the menu at any time.
+not miss 100%. If the mouse is asleep and does not answer, it retries every
+20 seconds — including before the first reading after startup. Cable and dongle
+changes are watched separately and refresh the state immediately. You can also
+press **Refresh now** in the menu at any time.
 
 ## Quick start
 
@@ -85,10 +85,10 @@ reliably.
 ## Why the value sometimes turns light blue
 
 The mouse sleeps when idle and does not answer queries until it is moved. The
-app shows the last known value in light blue. Move the mouse and press
-**Refresh now** — the value updates immediately. Without a manual refresh, the
-next attempt is in 10 minutes (if the mouse was asleep) or 30 minutes (normal
-mode). This is a hardware limitation, not a bug.
+app shows the last known value in light blue and retries every 20 seconds. Move
+the mouse and press **Refresh now** — the value updates immediately. After a
+successful reading, the next normal poll is in 30 minutes. This is a hardware
+limitation, not a bug.
 
 ## Where data is stored
 
