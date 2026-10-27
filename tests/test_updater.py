@@ -164,10 +164,32 @@ def test_download_update_saves_verified_file(monkeypatch, tmp_path):
 
     monkeypatch.setattr(updater, "_open_url", fake_open)
     destination = tmp_path / "LamzuBattery.new.exe"
+    progress = []
 
-    updater.download_update(info, destination)
+    updater.download_update(
+        info,
+        destination,
+        progress=lambda done, total: progress.append((done, total)),
+    )
 
     assert destination.read_bytes() == data
+    assert progress[0] == (0, len(data))
+    assert progress[-1] == (len(data), len(data))
+
+
+def test_ensure_update_target_succeeds(tmp_path):
+    target = tmp_path / "LamzuBattery.exe"
+    target.write_bytes(b"current")
+
+    updater.ensure_update_target(target, required_bytes=1024)
+
+
+def test_ensure_update_target_reports_missing_space(tmp_path):
+    target = tmp_path / "LamzuBattery.exe"
+    target.write_bytes(b"current")
+
+    with pytest.raises(updater.UpdateError, match="free space"):
+        updater.ensure_update_target(target, required_bytes=10**15)
 
 
 def test_download_update_rejects_bad_checksum(monkeypatch, tmp_path):
@@ -209,7 +231,22 @@ def test_replace_executable_keeps_backup(tmp_path):
     assert not new_path.exists()
 
 
-def test_cleanup_update_files(tmp_path):
+def test_replace_executable_refuses_to_overwrite_backup(tmp_path):
+    target = tmp_path / "LamzuBattery.exe"
+    new_path = tmp_path / "LamzuBattery.new.exe"
+    backup_path = tmp_path / "LamzuBattery.old.exe"
+    target.write_bytes(b"current")
+    new_path.write_bytes(b"new")
+    backup_path.write_bytes(b"previous")
+
+    with pytest.raises(updater.UpdateError):
+        updater.replace_executable(target, new_path, backup_path)
+
+    assert target.read_bytes() == b"current"
+    assert backup_path.read_bytes() == b"previous"
+
+
+def test_cleanup_download_files_keeps_backup(tmp_path):
     target = tmp_path / "LamzuBattery.exe"
     target.write_bytes(b"current")
     new_path, backup_path = updater.update_paths(target)
@@ -218,11 +255,11 @@ def test_cleanup_update_files(tmp_path):
     part_path = new_path.with_name(new_path.name + ".part")
     part_path.write_bytes(b"partial")
 
-    updater.cleanup_update_files(target, attempts=1)
+    updater.cleanup_download_files(target, attempts=1)
 
     assert not new_path.exists()
-    assert not backup_path.exists()
     assert not part_path.exists()
+    assert backup_path.read_bytes() == b"old"
     assert target.read_bytes() == b"current"
 
 

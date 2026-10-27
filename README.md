@@ -42,15 +42,14 @@ real Aurora hardware here.
   red — ≤ 15%, dark green — charging, light blue — no fresh data;
 - **UI language switch** between English and Russian (menu → Language); the
   choice is remembered, and the system language is used on first run;
-- **automatic updates**: on startup the app checks GitHub Releases, verifies
-  the SHA-256 of the new exe and replaces the current file wherever it is
-  located, then restarts itself; there is also a menu item to check manually;
-- **charging animation**: a highlight moves across the battery bar in the
-  desktop overlay; the tray colour stays solid;
+- **automatic updates**: on startup and every six hours the app checks GitHub
+  Releases, verifies the SHA-256 of the new exe, replaces the current file
+  wherever it is located, checks that the new instance started correctly and
+  only then removes the rollback copy; automatic installation can be disabled
+  in the menu, and updates can also be checked manually;
 - tooltip with model, percentage and state (`discharging`, `charging`, `full`);
 - the menu shows the detected model, for example `LAMZU Thorn`;
 - notifications on low battery and when fully charged;
-- optional desktop overlay (draggable, always on top);
 - start with Windows;
 - detects cable/dongle plug and unplug immediately and refreshes the state;
 - no administrator rights and nothing installed system-wide.
@@ -68,7 +67,8 @@ press **Refresh now** in the menu at any time.
    Python and installation are not required — it is a single executable.
 2. Run it. The icon appears in the notification area. Windows 11 often hides
    new icons under “^” — drag it onto the taskbar.
-3. Right-click the icon for the menu: refresh, desktop overlay, autostart, exit.
+3. Right-click the icon for the menu: refresh, autostart, logs, release page,
+   update settings and exit.
 
 You do not need to run the official Lamzu software: mouse settings are stored on
 the device. The file is unsigned, so Windows SmartScreen may show a warning —
@@ -100,10 +100,9 @@ limitation, not a bug.
 Next to the executable:
 
 ```
-data\status.json   — last state (read by the desktop overlay)
-data\settings.json — selected UI language
+data\status.json   — last state and update health marker
+data\settings.json — selected UI language and update mode
 data\app.log       — log
-data\overlay.json  — desktop overlay position
 ```
 
 If the executable directory is not writable (for example, `Program Files`),
@@ -120,24 +119,31 @@ is migrated to `LamzuBattery` automatically.
 
 ## Updates
 
-About 8 seconds after startup the app asks the GitHub Releases API for the
-latest version. If it is newer:
+About 8 seconds after startup, and then every six hours, the app asks the
+GitHub Releases API for the latest version. If it is newer:
 
-1. the release asset `LamzuBattery.exe` is downloaded next to the currently
+1. it first checks that the folder with the exe is writable and has enough
+   free space, so a protected folder fails before a large download;
+2. the release asset `LamzuBattery.exe` is downloaded next to the currently
    running exe — the path is taken from the running process, so the app can
-   live in any folder;
-2. the SHA-256 published by GitHub is verified;
-3. the current exe is renamed to `LamzuBattery.old.exe`, the new one takes its
+   live in any folder; download progress is shown in the tooltip;
+3. the SHA-256 published by GitHub is verified;
+4. the current exe is renamed to `LamzuBattery.old.exe`, the new one takes its
    place, and the app restarts itself;
-4. the old file is removed after the restart.
+5. the new instance reports that its tray is healthy within 30 seconds; only
+   then is the old file removed. If it fails to start, the old exe is restored
+   automatically and the error is written to the log;
+6. the previous version is kept until the health check passes, so a broken
+   update can be rolled back.
+
+The **Install updates automatically** menu item can be switched off. In that
+mode the app only notifies about a new version; **Check for updates** installs
+it on demand. The current version and exe path are shown by `python diagnose.py`.
 
 No administrator rights are needed when the exe is in a user-writable folder.
 If the folder is protected (for example, `Program Files`) or the exe was moved
-somewhere read-only, automatic replacement will fail safely and the app keeps
-running; download the new version manually in that case.
-
-Menu → **Check for updates** runs the same check on demand. The current version
-and exe path are shown by `python diagnose.py`.
+somewhere read-only, the preflight check reports it and the app keeps running;
+download the new version manually in that case.
 
 ## Uninstall
 

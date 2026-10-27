@@ -12,7 +12,8 @@ if errorlevel 1 goto error
 
 echo [3/3] Building exe...
 python -m PyInstaller --noconfirm --clean --onefile --windowed ^
-    --name LamzuBattery --icon icon.ico app.py
+    --name LamzuBattery --icon icon.ico ^
+    --exclude-module tkinter --exclude-module numpy app.py
 if errorlevel 1 goto error
 
 echo.

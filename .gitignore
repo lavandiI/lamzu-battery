@@ -9,7 +9,7 @@ build/
 dist/
 *.spec
 
-# Runtime data (status, logs, overlay position)
+# Runtime data (status, settings, logs)
 data/
 
 # Virtual environments and local secrets

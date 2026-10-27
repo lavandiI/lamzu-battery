@@ -7,16 +7,20 @@ running executable in its current directory and starts the new version.
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import logging
 import os
 import re
+import shutil
 import sys
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Iterator, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -29,15 +33,59 @@ USER_AGENT = "LamzuBattery"
 MAX_UPDATE_BYTES = 200 * 1024 * 1024
 MAX_JSON_BYTES = 1024 * 1024
 CHUNK_SIZE = 256 * 1024
+UPDATE_FILE_MUTEX = "Local\\LamzuBatteryUpdateFiles"
 
 _VERSION_RE = re.compile(r"(\d+(?:\.\d+)*)")
 _SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 
 log = logging.getLogger(__name__)
 
+_FILE_LOCK = threading.RLock()
+
 
 class UpdateError(RuntimeError):
     """Raised when an update cannot be checked, downloaded or installed."""
+
+
+@contextmanager
+def _update_file_lock(timeout: float = 30.0) -> Iterator[None]:
+    """Serialize exe replacement and backup cleanup.
+
+    The tray is single-instance, but an update and the background cleanup can
+    still run in the same process, and the old process may be rolling back
+    while the new one is starting.  A named mutex keeps those operations from
+    touching the same ``.old.exe`` at the same time.
+    """
+    with _FILE_LOCK:
+        if sys.platform != "win32":
+            yield
+            return
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_bool,
+            ctypes.c_wchar_p,
+        )
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_ulong)
+        kernel32.WaitForSingleObject.restype = ctypes.c_ulong
+        kernel32.ReleaseMutex.argtypes = (ctypes.c_void_p,)
+        kernel32.ReleaseMutex.restype = ctypes.c_bool
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+
+        handle = kernel32.CreateMutexW(None, False, UPDATE_FILE_MUTEX)
+        if not handle:
+            raise UpdateError("could not create update file lock")
+        result = kernel32.WaitForSingleObject(handle, int(timeout * 1000))
+        if result not in (0x00000000, 0x00000080):  # owned / abandoned
+            kernel32.CloseHandle(handle)
+            raise UpdateError("timed out waiting for update file lock")
+        try:
+            yield
+        finally:
+            kernel32.ReleaseMutex(handle)
+            kernel32.CloseHandle(handle)
 
 
 @dataclass(frozen=True)
@@ -108,6 +156,46 @@ def update_paths(target: Path) -> tuple[Path, Path]:
         target.with_name(f"{stem}.new{suffix}"),
         target.with_name(f"{stem}.old{suffix}"),
     )
+
+
+def ensure_update_target(target: Path, required_bytes: int = 0) -> None:
+    """Fail before downloading when the exe cannot be replaced safely.
+
+    A write probe is more reliable on Windows than ``os.access``: the folder
+    may grant write access while an individual exe is protected by its ACL.
+    The caller turns the raised message into a user-facing error.
+    """
+    target = Path(target)
+    if not target.is_file():
+        raise UpdateError(f"current exe not found: {target}")
+
+    parent = target.parent
+    probe = parent / f".{target.stem}.write-test-{os.getpid()}"
+    try:
+        probe.write_bytes(b"ok")
+    except OSError as exc:
+        raise UpdateError(f"update folder is not writable: {exc}") from exc
+    finally:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    try:
+        free = shutil.disk_usage(parent).free
+    except OSError:
+        return
+    try:
+        current_size = target.stat().st_size
+    except OSError:
+        current_size = 0
+    needed = max(0, int(required_bytes)) + current_size + 1024 * 1024
+    if free < needed:
+        raise UpdateError(
+            f"not enough free space for the update: "
+            f"{free // (1024 * 1024)} MiB available, "
+            f"{needed // (1024 * 1024)} MiB required"
+        )
 
 
 def _normalize_digest(value) -> Optional[str]:
@@ -229,6 +317,7 @@ def download_update(
     info: UpdateInfo,
     destination: Path,
     timeout: float = 120.0,
+    progress: Optional[Callable[[int, int], None]] = None,
 ) -> Path:
     """Download the release asset, verify size/SHA-256 and save it."""
     destination = Path(destination)
@@ -249,6 +338,11 @@ def download_update(
             final_url = str(response.geturl() or "")
             if not _is_trusted_download_url(final_url):
                 raise UpdateError("untrusted download redirect")
+            if progress is not None:
+                try:
+                    progress(0, info.asset_size)
+                except Exception:
+                    log.debug("download progress callback failed", exc_info=True)
             with part.open("wb") as handle:
                 while True:
                     chunk = response.read(CHUNK_SIZE)
@@ -259,6 +353,13 @@ def download_update(
                         raise UpdateError("update is too large")
                     handle.write(chunk)
                     hasher.update(chunk)
+                    if progress is not None:
+                        try:
+                            progress(total, info.asset_size)
+                        except Exception:
+                            log.debug(
+                                "download progress callback failed", exc_info=True
+                            )
     except Exception:
         try:
             part.unlink(missing_ok=True)
@@ -310,7 +411,9 @@ def replace_executable(
 
     Windows allows renaming a running executable, so the current process can
     keep running from the backup path while the new file takes over the
-    original name.
+    original name.  An existing backup is deliberately not overwritten: it is
+    the rollback copy of the previous update and is only removed after the new
+    instance reports that it started successfully.
     """
     target = Path(target)
     new_path = Path(new_path)
@@ -323,21 +426,25 @@ def replace_executable(
     if not new_path.is_file():
         raise UpdateError(f"downloaded exe not found: {new_path}")
 
-    try:
+    with _update_file_lock():
         if backup_path.exists():
-            backup_path.unlink()
-        os.replace(target, backup_path)
-    except OSError as exc:
-        raise UpdateError(f"could not move current exe: {exc}") from exc
-
-    try:
-        os.replace(new_path, target)
-    except OSError as exc:
+            raise UpdateError(
+                "a previous update backup is still present; "
+                "wait for the update cleanup to finish"
+            )
         try:
-            os.replace(backup_path, target)
-        except OSError:
-            log.exception("could not restore the original exe")
-        raise UpdateError(f"could not install update: {exc}") from exc
+            os.replace(target, backup_path)
+        except OSError as exc:
+            raise UpdateError(f"could not move current exe: {exc}") from exc
+
+        try:
+            os.replace(new_path, target)
+        except OSError as exc:
+            try:
+                os.replace(backup_path, target)
+            except OSError:
+                log.exception("could not restore the original exe")
+            raise UpdateError(f"could not install update: {exc}") from exc
     return backup_path
 
 
@@ -353,39 +460,52 @@ def rollback_executable(
     if not target.is_file() or not backup_path.is_file():
         return False
     try:
-        os.replace(target, new_path)
-        os.replace(backup_path, target)
+        with _update_file_lock():
+            os.replace(target, new_path)
+            os.replace(backup_path, target)
         return True
-    except OSError:
+    except (OSError, UpdateError):
         log.exception("could not roll back the update")
         return False
 
 
-def _remove_with_retries(path: Path, attempts: int, delay: float) -> None:
+def _remove_with_retries(
+    path: Path,
+    attempts: int,
+    delay: float,
+    *,
+    use_lock: bool = False,
+) -> None:
     for attempt in range(attempts):
         if not path.exists():
             return
         try:
+            if use_lock:
+                with _update_file_lock(timeout=5.0):
+                    if not path.exists():
+                        return
+                    path.unlink()
+                    return
             path.unlink()
             return
-        except OSError:
+        except (OSError, UpdateError):
             if attempt == attempts - 1:
                 log.debug("could not remove update file %s", path)
                 return
             time.sleep(delay)
 
 
-def cleanup_update_files(
+def cleanup_download_files(
     target: Path,
     attempts: int = 20,
     delay: float = 0.25,
 ) -> None:
-    """Remove stale download/backup files after a successful update."""
+    """Remove an unfinished download, never the rollback backup."""
     target = Path(target)
-    new_path, backup_path = update_paths(target)
+    new_path, _ = update_paths(target)
     part_path = new_path.with_name(new_path.name + ".part")
-    for path in (part_path, new_path, backup_path):
-        _remove_with_retries(path, attempts, delay)
+    for path in (part_path, new_path):
+        _remove_with_retries(path, attempts, delay, use_lock=True)
 
 
 def cleanup_backup(
@@ -400,4 +520,6 @@ def cleanup_backup(
     only the backup file and never a download in progress.
     """
     _, backup_path = update_paths(target)
-    _remove_with_retries(backup_path, attempts, delay)
+    _remove_with_retries(
+        backup_path, attempts, delay, use_lock=True
+    )

@@ -2,7 +2,6 @@
 
 Поддерживаются модели Lamzu с протоколами Compx и Aurora (см. lamzu.py).
 Запуск:  pythonw app.py
-Оверлей: pythonw app.py --overlay   (запускается из меню трея)
 """
 
 from __future__ import annotations
@@ -11,12 +10,12 @@ import argparse
 import ctypes
 import json
 import logging
-import math
 import os
 import subprocess
 import sys
 import threading
 import time
+import webbrowser
 import winreg
 from functools import lru_cache
 from logging.handlers import RotatingFileHandler
@@ -34,11 +33,14 @@ from lamzu import BatteryReading, present_product_ids, read_battery
 APP_NAME = "LAMZU Battery"
 APP_ID = "LamzuBattery"
 MUTEX_TRAY = "Local\\LamzuBatteryTray"
-MUTEX_OVERLAY = "Local\\LamzuBatteryOverlay"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_VALUE = "LamzuBattery"
 LEGACY_RUN_VALUE = "LamzuThornBattery"
 CREATE_NO_WINDOW = 0x08000000
+RELEASES_URL = "https://github.com/lavandiI/lamzu-battery/releases/latest"
+UPDATE_CHECK_INTERVAL = 6 * 60 * 60
+HEALTH_DELAY = 5.0
+UPDATE_READY_TIMEOUT = 30.0
 
 if getattr(sys, "frozen", False):
     # PyInstaller: файлы рядом с exe, а не во временной папке _MEIPASS.
@@ -68,9 +70,11 @@ def _pick_data_dir() -> Path:
 
 DATA_DIR = _pick_data_dir()
 STATUS_FILE = DATA_DIR / "status.json"
-OVERLAY_POS_FILE = DATA_DIR / "overlay.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 LOG_FILE = DATA_DIR / "app.log"
+
+DEFAULT_UPDATE_MODE = "auto"
+UPDATE_MODES = ("auto", "notify")
 
 COLOR_NORMAL = (0, 122, 255, 255)       # синий
 COLOR_WARN = (255, 214, 10, 255)        # яркий жёлтый
@@ -88,27 +92,56 @@ POLL_INTERVAL_OFFLINE = 20
 log = logging.getLogger("lamzu_tray")
 
 
-def _load_language() -> str:
-    """Прочитать выбранный язык; при первом запуске — язык системы."""
+def _load_settings() -> dict:
+    """Read settings, keeping unknown keys for forward compatibility."""
     try:
         data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-        language = data.get("language")
     except (OSError, ValueError, TypeError, AttributeError):
-        language = None
-    return i18n.normalize_language(language or i18n.detect_system_language())
+        data = None
+    if not isinstance(data, dict):
+        data = {}
+    settings = dict(data)
+    mode = str(settings.get("update_mode") or DEFAULT_UPDATE_MODE).lower()
+    settings["update_mode"] = (
+        mode if mode in UPDATE_MODES else DEFAULT_UPDATE_MODE
+    )
+    return settings
 
 
-def _save_language(language: str) -> None:
+def _normalize_update_mode(value: object) -> str:
+    mode = str(value or DEFAULT_UPDATE_MODE).lower()
+    return mode if mode in UPDATE_MODES else DEFAULT_UPDATE_MODE
+
+
+def _save_settings(**changes: object) -> None:
+    """Merge changes into settings.json instead of replacing the file."""
+    settings = _load_settings()
+    settings.update(changes)
+    settings["update_mode"] = _normalize_update_mode(
+        settings.get("update_mode")
+    )
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         tmp = SETTINGS_FILE.with_suffix(".tmp")
         tmp.write_text(
-            json.dumps({"language": language}, ensure_ascii=False, indent=2),
+            json.dumps(settings, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         os.replace(tmp, SETTINGS_FILE)
     except OSError:
         log.debug("could not save settings", exc_info=True)
+
+
+def _load_language() -> str:
+    """Прочитать выбранный язык; при первом запуске — язык системы."""
+    language = _load_settings().get("language")
+    return i18n.normalize_language(
+        language or i18n.detect_system_language()
+    )
+
+
+def _save_language(language: str) -> None:
+    _save_settings(language=language)
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +181,15 @@ def _acquire_mutex(name: str):
         kernel32.CloseHandle(handle)
         return None
     return handle
+
+
+def _close_mutex(handle) -> None:
+    if not handle:
+        return
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    kernel32.CloseHandle.restype = ctypes.c_bool
+    kernel32.CloseHandle(handle)
 
 
 @lru_cache(maxsize=64)
@@ -229,23 +271,6 @@ def render_icon(text: str, color: tuple[int, int, int, int], size: int = 64) -> 
         return image
 
 
-def _rgba_hex(color: tuple[int, int, int, int]) -> str:
-    """Цвет PIL (RGBA) -> строка #RRGGBB для tkinter."""
-    return f"#{color[0]:02X}{color[1]:02X}{color[2]:02X}"
-
-
-def _status_color(percent: Optional[int], state: Optional[int], online: bool) -> str:
-    if percent is None or not online:
-        return _rgba_hex(COLOR_STALE)
-    if state in (1, 2):
-        return _rgba_hex(COLOR_CHARGE)
-    if percent <= 15:
-        return _rgba_hex(COLOR_LOW)
-    if percent <= 30:
-        return _rgba_hex(COLOR_WARN)
-    return _rgba_hex(COLOR_NORMAL)
-
-
 def autostart_command() -> str:
     if getattr(sys, "frozen", False):
         return f'"{sys.executable}"'
@@ -299,30 +324,35 @@ def _migrate_legacy_autostart() -> None:
         pass
 
 
-def overlay_command() -> list[str]:
-    if getattr(sys, "frozen", False):
-        return [sys.executable, "--overlay"]
-    pythonw = Path(sys.executable).with_name("pythonw.exe")
-    interpreter = pythonw if pythonw.exists() else Path(sys.executable)
-    return [str(interpreter), str(Path(__file__).resolve()), "--overlay"]
-
-
 # ---------------------------------------------------------------------------
 # Трей
 # ---------------------------------------------------------------------------
 
 class BatteryTray:
-    def __init__(self) -> None:
+    def __init__(self, mutex=None) -> None:
         self._last: Optional[BatteryReading] = None
         self._last_ok: float = 0.0
         self._online = False
         self._stop = threading.Event()
         self._poll_lock = threading.Lock()
         self._icon_lock = threading.Lock()
+        self._status_lock = threading.Lock()
         self._update_lock = threading.Lock()
-        self._overlay: Optional[subprocess.Popen] = None
+        self._healthy = False
+        self._cleanup_started = False
+        self._health_timer: Optional[threading.Timer] = None
+        self._handed_off = False
+        self._update_pending = False
+        self._mutex = mutex
         self._low_notified = False
         self._full_notified = False
+        self._last_offered_version: Optional[str] = None
+        self._last_update_error_at = 0.0
+        self._progress_percent: Optional[int] = None
+        settings = _load_settings()
+        self._auto_update = (
+            _normalize_update_mode(settings.get("update_mode")) == "auto"
+        )
         self._icon = pystray.Icon(
             APP_ID,
             render_icon("?", COLOR_STALE),
@@ -336,7 +366,7 @@ class BatteryTray:
             target=self._watch_devices, name="device-watcher", daemon=True
         )
         self._update_thread = threading.Thread(
-            target=self._startup_update_check, name="update-checker", daemon=True
+            target=self._update_loop, name="update-checker", daemon=True
         )
 
     # --- меню -------------------------------------------------------------
@@ -351,11 +381,6 @@ class BatteryTray:
                 self._on_refresh,
                 default=True,
             ),
-            pystray.MenuItem(
-                lambda item: i18n.tr("menu.desktop"),
-                self._on_toggle_overlay,
-                checked=lambda item: self._overlay_running(),
-            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
                 lambda item: i18n.tr("menu.autostart"),
@@ -364,6 +389,15 @@ class BatteryTray:
             ),
             pystray.MenuItem(
                 lambda item: i18n.tr("menu.logs"), self._on_open_logs
+            ),
+            pystray.MenuItem(
+                lambda item: i18n.tr("menu.release_page"),
+                self._on_open_release_page,
+            ),
+            pystray.MenuItem(
+                lambda item: i18n.tr("menu.auto_update"),
+                self._on_toggle_auto_update,
+                checked=lambda item: self._auto_update,
             ),
             pystray.MenuItem(
                 lambda item: i18n.tr("menu.check_updates"),
@@ -553,17 +587,124 @@ class BatteryTray:
             target=self._check_updates, args=(True,), daemon=True
         ).start()
 
-    def _startup_update_check(self) -> None:
+    def _update_loop(self) -> None:
         # Дать трею появиться и не мешать первому опросу мыши.
         if self._stop.wait(8.0):
             return
-        self._check_updates(manual=False)
+        while not self._stop.is_set():
+            self._check_updates(manual=False)
+            if self._stop.wait(UPDATE_CHECK_INTERVAL):
+                return
 
-    def _notify_update_error(self, manual: bool) -> None:
-        if manual:
-            self._notify(
-                i18n.tr("update.failed"), i18n.tr("update.title")
+    def _on_toggle_auto_update(self, icon, item) -> None:
+        self._auto_update = not self._auto_update
+        _save_settings(
+            update_mode="auto" if self._auto_update else "notify"
+        )
+        log.info("automatic updates = %s", self._auto_update)
+        try:
+            icon.update_menu()
+        except Exception:
+            log.debug("could not update tray menu", exc_info=True)
+
+    def _on_open_release_page(self, icon, item) -> None:
+        try:
+            webbrowser.open(RELEASES_URL)
+        except Exception:
+            log.exception("could not open the release page")
+
+    def _notify_update_error(
+        self,
+        manual: bool,
+        exc: Optional[BaseException] = None,
+        stage: str = "check",
+    ) -> None:
+        """Show a useful error without turning every offline start into spam."""
+        detail = str(exc or "").strip()
+        if len(detail) > 180:
+            detail = detail[:177] + "..."
+        now = time.time()
+        if not manual and stage == "check":
+            if now - self._last_update_error_at < 24 * 60 * 60:
+                return
+            self._last_update_error_at = now
+        if manual or stage != "check":
+            message = (
+                i18n.tr("update.failed_reason", reason=detail)
+                if detail
+                else i18n.tr("update.failed")
             )
+            self._notify(message, i18n.tr("update.title"))
+
+    def _on_download_progress(self, done: int, total: int) -> None:
+        percent = (
+            max(0, min(100, int(done * 100 / total))) if total > 0 else None
+        )
+        if percent == self._progress_percent:
+            return
+        self._progress_percent = percent
+        text = (
+            i18n.tr("update.downloading", percent=percent)
+            if percent is not None
+            else i18n.tr("update.downloading_unknown")
+        )
+        try:
+            with self._icon_lock:
+                self._icon.title = f"{APP_NAME}: {text}"
+        except Exception:
+            log.debug("could not show update progress", exc_info=True)
+
+    def _clear_progress(self) -> None:
+        if self._progress_percent is None:
+            return
+        self._progress_percent = None
+        self._apply()
+
+    def _read_status(self) -> dict:
+        try:
+            data = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _release_instance_mutex(self) -> None:
+        if self._mutex is None:
+            return
+        _close_mutex(self._mutex)
+        self._mutex = None
+        log.info("released the tray mutex for the updated instance")
+
+    def _reacquire_instance_mutex(self) -> bool:
+        if self._mutex is not None:
+            return True
+        self._mutex = _acquire_mutex(MUTEX_TRAY)
+        if self._mutex is None:
+            log.error("could not reacquire the tray mutex after a failed update")
+        return self._mutex is not None
+
+    def _wait_for_new_instance(self, process, version: str) -> bool:
+        """Wait until the updated process reports that its tray is healthy."""
+        deadline = time.monotonic() + UPDATE_READY_TIMEOUT
+        while time.monotonic() < deadline:
+            if self._stop.is_set():
+                # The user asked to quit while the update was starting; let
+                # the new instance take over instead of rolling it back.
+                return True
+            if process.poll() is not None:
+                log.warning(
+                    "updated instance exited early with code %s",
+                    process.returncode,
+                )
+                return False
+            status = self._read_status()
+            if (
+                str(status.get("version") or "") == version
+                and status.get("healthy") is True
+            ):
+                return True
+            time.sleep(0.4)
+        log.warning("updated instance did not report readiness in time")
+        return False
 
     def _check_updates(self, manual: bool) -> None:
         if not self._update_lock.acquire(blocking=False):
@@ -593,7 +734,7 @@ class BatteryTray:
                 info = updater.check_for_update(APP_VERSION)
             except Exception as exc:
                 log.warning("update check failed: %s", exc)
-                self._notify_update_error(manual)
+                self._notify_update_error(manual, exc, "check")
                 return
 
             if info is None:
@@ -611,28 +752,60 @@ class BatteryTray:
                 APP_VERSION,
                 target,
             )
-            new_path, backup_path = updater.update_paths(target)
-            try:
-                updater.download_update(info, new_path)
-            except Exception as exc:
-                log.warning("update download failed: %s", exc)
-                self._notify_update_error(manual)
+            if not manual and not self._auto_update:
+                if self._last_offered_version != info.version:
+                    self._last_offered_version = info.version
+                    self._notify(
+                        i18n.tr("update.available", version=info.version),
+                        i18n.tr("update.title"),
+                    )
                 return
 
+            new_path, backup_path = updater.update_paths(target)
+            if backup_path.exists():
+                error = updater.UpdateError(
+                    "the previous update backup is still being cleaned up"
+                )
+                log.warning("update delayed: %s", error)
+                self._notify_update_error(manual, error, "preflight")
+                return
+
+            try:
+                updater.ensure_update_target(target, info.asset_size)
+            except Exception as exc:
+                log.warning("update preflight failed: %s", exc)
+                self._notify_update_error(manual, exc, "preflight")
+                return
+
+            try:
+                updater.download_update(
+                    info,
+                    new_path,
+                    progress=self._on_download_progress,
+                )
+            except Exception as exc:
+                log.warning("update download failed: %s", exc)
+                self._clear_progress()
+                self._notify_update_error(manual, exc, "download")
+                return
+
+            self._clear_progress()
             if self._stop.is_set():
                 log.info("update cancelled: application is stopping")
                 return
 
+            self._update_pending = True
             try:
                 updater.replace_executable(target, new_path, backup_path)
             except Exception as exc:
+                self._update_pending = False
                 log.warning("update replacement failed: %s", exc)
-                self._notify_update_error(manual)
+                self._notify_update_error(manual, exc, "install")
                 return
 
             log.info("update installed, restarting %s", target)
             try:
-                subprocess.Popen(
+                process = subprocess.Popen(
                     [str(target), "--wait-for-instance"],
                     cwd=str(target.parent),
                     creationflags=CREATE_NO_WINDOW,
@@ -640,91 +813,131 @@ class BatteryTray:
                     # папку старого bootloader и будет работать из неё.
                     env=updater.clean_environment(),
                 )
-            except Exception:
+            except Exception as exc:
                 log.exception("could not start the updated application")
                 updater.rollback_executable(target, backup_path, new_path)
-                self._notify_update_error(manual)
+                self._update_pending = False
+                self._notify_update_error(manual, exc, "install")
                 return
 
             self._notify(
                 i18n.tr("update.installing", version=info.version),
                 i18n.tr("update.title"),
             )
-            time.sleep(1.5)
-            self._stop.set()
-            self._icon.stop()
+            # The old mutex must be released before the new process can start
+            # its tray. The old process remains alive as a short watchdog.
+            self._release_instance_mutex()
+            if self._wait_for_new_instance(process, info.version):
+                log.info("updated instance is healthy, stopping the old one")
+                self._handed_off = True
+                self._stop.set()
+                self._icon.stop()
+                return
+
+            log.error("updated instance failed the health check; rolling back")
+            try:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5.0)
+            except Exception:
+                log.debug("could not stop the unhealthy instance", exc_info=True)
+
+            restored = updater.rollback_executable(
+                target, backup_path, new_path
+            )
+            if restored:
+                log.info("restored the previous version at %s", target)
+                try:
+                    subprocess.Popen(
+                        [str(target), "--wait-for-instance"],
+                        cwd=str(target.parent),
+                        creationflags=CREATE_NO_WINDOW,
+                        env=updater.clean_environment(),
+                    )
+                    self._handed_off = True
+                except Exception:
+                    log.exception("could not restart the previous version")
+                    self._reacquire_instance_mutex()
+            else:
+                self._reacquire_instance_mutex()
+            self._update_pending = False
+            self._notify_update_error(
+                manual,
+                "the new version did not start correctly; "
+                "the previous version was restored",
+                "health",
+            )
+            if self._handed_off:
+                time.sleep(0.5)
+                self._stop.set()
+                self._icon.stop()
         finally:
             self._update_lock.release()
 
-    # --- файл состояния для оверлея --------------------------------------
+    # --- файл состояния и health-check обновления ------------------------
 
     def _write_status(self, running: bool = True) -> None:
+        if self._handed_off or self._update_pending:
+            # During hand-off the new instance owns status.json; writing the
+            # old version here would confuse its health check.
+            return
         payload = {
             "app": APP_NAME,
             "version": APP_VERSION,
+            "pid": os.getpid(),
             "display_name": self._display_name(),
             "language": i18n.get_language(),
             "model": self._last.model if self._last else None,
             "protocol": self._last.protocol if self._last else None,
             "product": self._last.product if self._last else None,
             "running": running,
+            "healthy": bool(self._healthy),
+            "heartbeat_unix": int(time.time()),
             "online": self._online,
             "percent": self._last.percent if self._last else None,
             "state": self._last.state if self._last else None,
-            "state_text": (
-                i18n.state_text(self._last.state, self._last.percent)
-                if self._last
-                else None
-            ),
             "charging": bool(self._last and self._last.charging),
             "full": bool(self._last and self._last.full),
             "updated_unix": int(self._last_ok) if self._last else None,
             "polled_unix": int(time.time()),
-            # Пока приложение работает, показание остаётся свежим до
-            # следующего опроса (30 мин в обычном режиме, 1 мин на зарядке).
-            "stale_after": int(max(180, self._interval() * 1.5 + 60)),
         }
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
-            tmp = STATUS_FILE.with_suffix(".tmp")
-            tmp.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            os.replace(tmp, STATUS_FILE)
+            with self._status_lock:
+                tmp = STATUS_FILE.with_suffix(".tmp")
+                tmp.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                os.replace(tmp, STATUS_FILE)
         except OSError:
             log.debug("could not write status file", exc_info=True)
+
+    def _mark_healthy(self) -> None:
+        if self._stop.is_set():
+            return
+        self._healthy = True
+        self._write_status()
+        self._start_backup_cleanup()
+
+    def _start_backup_cleanup(self) -> None:
+        if self._cleanup_started:
+            return
+        self._cleanup_started = True
+        executable = updater.executable_path()
+        if executable is None:
+            return
+        threading.Thread(
+            target=updater.cleanup_backup,
+            args=(executable,),
+            name="update-cleanup",
+            daemon=True,
+        ).start()
 
     # --- действия меню ----------------------------------------------------
 
     def _on_refresh(self, icon, item) -> None:
         threading.Thread(target=self._poll, daemon=True).start()
-
-    def _overlay_running(self) -> bool:
-        return self._overlay is not None and self._overlay.poll() is None
-
-    def _on_toggle_overlay(self, icon, item) -> None:
-        if self._overlay_running():
-            self._overlay.terminate()
-            try:
-                self._overlay.wait(timeout=2)
-            except Exception:
-                pass
-            self._overlay = None
-            log.info("overlay stopped")
-        else:
-            try:
-                self._overlay = subprocess.Popen(
-                    overlay_command(),
-                    cwd=str(BASE_DIR),
-                    creationflags=CREATE_NO_WINDOW,
-                )
-                log.info("overlay started (pid %s)", self._overlay.pid)
-            except Exception:
-                log.exception("could not start overlay")
-        try:
-            icon.update_menu()
-        except Exception:
-            pass
 
     def _on_toggle_autostart(self, icon, item) -> None:
         try:
@@ -747,7 +960,7 @@ class BatteryTray:
         language = i18n.set_language(language)
         _save_language(language)
         log.info("language = %s", language)
-        # Обновляем подсказку, состояние для оверлея и все подписи меню.
+        # Обновляем подсказку и все подписи меню.
         self._apply()
         self._write_status()
         try:
@@ -759,15 +972,6 @@ class BatteryTray:
         self._stop.set()
         icon.stop()
 
-    def _kill_overlay(self) -> None:
-        if self._overlay_running():
-            try:
-                self._overlay.terminate()
-                self._overlay.wait(timeout=2)
-            except Exception:
-                pass
-        self._overlay = None
-
     # --- запуск -----------------------------------------------------------
 
     def run(self) -> None:
@@ -778,6 +982,9 @@ class BatteryTray:
             updater.executable_path() or BASE_DIR,
         )
         self._write_status(running=True)
+        self._health_timer = threading.Timer(HEALTH_DELAY, self._mark_healthy)
+        self._health_timer.daemon = True
+        self._health_timer.start()
         self._thread.start()
         self._watch_thread.start()
         self._update_thread.start()
@@ -785,250 +992,13 @@ class BatteryTray:
             self._icon.run()
         finally:
             self._stop.set()
+            if self._health_timer is not None:
+                self._health_timer.cancel()
             self._thread.join(timeout=2)
             self._watch_thread.join(timeout=1)
             self._update_thread.join(timeout=1)
-            self._kill_overlay()
             self._write_status(running=False)
             log.info("tray stopped")
-
-
-# ---------------------------------------------------------------------------
-# Оверлей на рабочем столе
-# ---------------------------------------------------------------------------
-
-def run_overlay() -> int:
-    import tkinter as tk
-
-    i18n.set_language(_load_language())
-    mutex = _acquire_mutex(MUTEX_OVERLAY)
-    if mutex is None:
-        return 0
-
-    width, height = 190, 60
-    chroma = "#010203"
-    bg = "#141418"
-    border = "#2C2C31"
-
-    root = tk.Tk()
-    root.title(APP_NAME)
-    root.overrideredirect(True)
-    root.attributes("-topmost", True)
-    root.attributes("-alpha", 0.94)
-    try:
-        root.attributes("-transparentcolor", chroma)
-    except tk.TclError:
-        pass
-    root.configure(bg=chroma)
-
-    saved = _load_overlay_pos()
-    if saved:
-        x, y = saved
-    else:
-        x = root.winfo_screenwidth() - width - 24
-        y = 24
-    x = max(0, min(x, root.winfo_screenwidth() - width))
-    y = max(0, min(y, root.winfo_screenheight() - height))
-    root.geometry(f"{width}x{height}+{x}+{y}")
-
-    canvas = tk.Canvas(
-        root,
-        width=width,
-        height=height,
-        bg=chroma,
-        highlightthickness=0,
-        bd=0,
-    )
-    canvas.pack(fill="both", expand=True)
-
-    # Скруглённый фон
-    r = 12
-    points = [
-        r, 0, width - r, 0, width, 0, width, r,
-        width, height - r, width, height, width - r, height,
-        r, height, 0, height, 0, height - r, 0, r, 0, 0,
-    ]
-    canvas.create_polygon(points, smooth=True, fill=bg, outline=border, width=1)
-
-    header_item = canvas.create_text(
-        (14, 7), anchor="nw", text=APP_NAME.upper(), fill="#8E8E93",
-        font=("Segoe UI Semibold", 7),
-    )
-    percent_item = canvas.create_text(
-        (12, 14), anchor="nw", text="—", fill="#B8D4FF",
-        font=("Segoe UI Bold", 26),
-    )
-    state_item = canvas.create_text(
-        (105, 19), anchor="nw", text=i18n.tr("overlay.no_connection"),
-        fill="#B8D4FF", font=("Segoe UI", 8),
-    )
-
-    # Батарейка
-    canvas.create_rectangle(105, 38, 166, 48, outline="#48484A", width=1)
-    canvas.create_rectangle(166, 41, 169, 45, outline="#48484A", fill="#48484A")
-    bar_item = canvas.create_rectangle(107, 40, 107, 46, outline="", fill="#B8D4FF")
-    # Бегущий блик во время зарядки
-    dot_item = canvas.create_oval(
-        0, 0, 0, 0, outline="", fill="#F2FFF7", state="hidden"
-    )
-
-    # Перетаскивание
-    drag = {"x": 0, "y": 0}
-
-    def start_drag(event):
-        drag["x"] = event.x_root - root.winfo_x()
-        drag["y"] = event.y_root - root.winfo_y()
-
-    def move_drag(event):
-        nx = event.x_root - drag["x"]
-        ny = event.y_root - drag["y"]
-        root.geometry(f"+{nx}+{ny}")
-
-    for widget in (root, canvas):
-        widget.bind("<Button-1>", start_drag)
-        widget.bind("<B1-Motion>", move_drag)
-
-    def close_overlay():
-        _save_overlay_pos(root.winfo_x(), root.winfo_y())
-        root.destroy()
-
-    menu = tk.Menu(root, tearoff=0)
-    menu.add_command(label=i18n.tr("overlay.close"), command=close_overlay)
-
-    def popup(event):
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
-
-    root.bind("<Button-3>", popup)
-    canvas.bind("<Button-3>", popup)
-
-    started = time.time()
-    missing_since: Optional[float] = None
-    stopped_since: Optional[float] = None
-    cache = {"data": None, "read_at": 0.0}
-
-    def tick():
-        nonlocal missing_since, stopped_since
-        now = time.time()
-
-        if now - cache["read_at"] >= 1.0:
-            cache["read_at"] = now
-            try:
-                data = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
-                missing_since = None
-            except Exception:
-                data = None
-                if missing_since is None:
-                    missing_since = now
-
-            if data is None:
-                cache["data"] = None
-                if now - started > 10:
-                    close_overlay()
-                    return
-            else:
-                if not data.get("running", True):
-                    if stopped_since is None:
-                        stopped_since = now
-                    elif now - stopped_since > 5:
-                        close_overlay()
-                        return
-                else:
-                    stopped_since = None
-                cache["data"] = data
-
-        data = cache["data"]
-        if data is not None:
-            language = data.get("language")
-            if language in i18n.LANGUAGES and language != i18n.get_language():
-                i18n.set_language(language)
-                try:
-                    menu.entryconfigure(0, label=i18n.tr("overlay.close"))
-                except tk.TclError:
-                    pass
-
-        if data is None:
-            percent, state, online = None, None, False
-            charging = full = False
-            state_text = i18n.tr("overlay.no_data")
-            display_name = APP_NAME
-        else:
-            percent = data.get("percent")
-            state = data.get("state")
-            online = bool(data.get("online"))
-            charging = bool(data.get("charging"))
-            full = bool(data.get("full"))
-            display_name = data.get("display_name") or APP_NAME
-            age = now - (data.get("updated_unix") or 0)
-            stale_after = data.get("stale_after") or 180
-            if online and age > stale_after:
-                online = False
-                charging = False
-                full = False
-                state_text = i18n.tr("overlay.stale")
-            elif not online:
-                charging = False
-                full = False
-                state_text = i18n.tr("overlay.no_connection")
-            elif state is not None:
-                state_text = i18n.state_text(state, percent)
-            else:
-                state_text = i18n.tr("overlay.no_data")
-
-        color = _status_color(percent, state, online)
-        phase = 0.0
-        if online and charging:
-            phase = (math.sin(now * 2 * math.pi / 1.6) + 1) / 2
-
-        canvas.itemconfigure(header_item, text=display_name.upper())
-        canvas.itemconfigure(
-            percent_item,
-            text="—" if percent is None else f"{percent}%",
-            fill=color,
-        )
-        canvas.itemconfigure(state_item, text=state_text, fill=color)
-
-        if percent is None:
-            bar_w = 0
-        else:
-            bar_w = int(57 * max(0, min(percent, 100)) / 100)
-        canvas.coords(bar_item, 107, 40, 107 + bar_w, 46)
-        canvas.itemconfigure(bar_item, fill=color)
-
-        if online and charging:
-            # Блик бежит по заполненной части батарейки.
-            travel = max(0, bar_w - 5)
-            dot_x = 107 + travel * phase
-            canvas.coords(dot_item, dot_x, 40.5, dot_x + 5, 45.5)
-            canvas.itemconfigure(dot_item, state="normal")
-        else:
-            canvas.itemconfigure(dot_item, state="hidden")
-
-        root.after(80 if (online and charging) else 500, tick)
-
-    tick()
-    root.mainloop()
-    return 0
-
-
-def _load_overlay_pos() -> Optional[tuple[int, int]]:
-    try:
-        data = json.loads(OVERLAY_POS_FILE.read_text(encoding="utf-8"))
-        return int(data["x"]), int(data["y"])
-    except Exception:
-        return None
-
-
-def _save_overlay_pos(x: int, y: int) -> None:
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        OVERLAY_POS_FILE.write_text(
-            json.dumps({"x": int(x), "y": int(y)}), encoding="utf-8"
-        )
-    except OSError:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1039,18 +1009,12 @@ def main() -> int:
     i18n.set_language(_load_language())
     parser = argparse.ArgumentParser(description=APP_NAME)
     parser.add_argument(
-        "--overlay", action="store_true", help=i18n.tr("cli.overlay_help")
-    )
-    parser.add_argument(
         "--debug", action="store_true", help=i18n.tr("cli.debug_help")
     )
     parser.add_argument(
         "--wait-for-instance", action="store_true", help=argparse.SUPPRESS
     )
     args = parser.parse_args()
-
-    if args.overlay:
-        return run_overlay()
 
     setup_logging(args.debug)
     executable = updater.executable_path()
@@ -1077,18 +1041,11 @@ def main() -> int:
         return 0
 
     if executable is not None:
-        # Скачанный файл и .part можно убрать сразу, а старый exe может быть
-        # ещё занят bootloader'ом предыдущей версии — его удаляем в фоне,
-        # не задерживая появление трея.
-        updater.cleanup_update_files(executable, attempts=1)
-        threading.Thread(
-            target=updater.cleanup_backup,
-            args=(executable,),
-            name="update-cleanup",
-            daemon=True,
-        ).start()
+        # A stale .new.exe is safe to remove before the tray starts. The
+        # .old.exe backup is kept until this instance reports healthy.
+        updater.cleanup_download_files(executable, attempts=1)
 
-    BatteryTray().run()
+    BatteryTray(mutex).run()
     return 0
 
 

@@ -1,9 +1,7 @@
 """Russian/English UI strings for LAMZU Battery.
 
-The tray, notifications and desktop overlay all use this module. The selected
-language is stored by the application in ``data/settings.json``; the overlay
-receives the current language through ``status.json`` so it can update without
-a restart.
+The tray and notifications use this module. The selected language is stored by
+the application in ``data/settings.json``.
 """
 
 from __future__ import annotations
@@ -18,9 +16,10 @@ LANGUAGE_NAMES = {"ru": "Русский", "en": "English"}
 _STRINGS = {
     "en": {
         "menu.refresh": "Refresh now",
-        "menu.desktop": "Show on desktop",
         "menu.autostart": "Start with Windows",
         "menu.logs": "Open logs",
+        "menu.release_page": "Open release page",
+        "menu.auto_update": "Install updates automatically",
         "menu.check_updates": "Check for updates",
         "menu.language": "Language",
         "menu.exit": "Exit",
@@ -42,18 +41,17 @@ _STRINGS = {
         "state.charging": "charging",
         "state.full": "full",
         "state.unknown": "state {state}",
-        "overlay.no_data": "no data",
-        "overlay.stale": "data is stale",
-        "overlay.no_connection": "no connection",
-        "overlay.close": "Close",
         "update.title": "Update",
         "update.checking": "Checking for updates...",
         "update.busy": "An update check is already running.",
         "update.latest": "You have the latest version ({version}).",
+        "update.available": "Version {version} is available. Use the update menu item to install it.",
         "update.installing": "Version {version} installed. Restarting...",
         "update.failed": "Could not update. Download the new version from GitHub.",
+        "update.failed_reason": "Could not update: {reason}. Open the release page from the tray menu.",
+        "update.downloading": "Downloading update... {percent}%",
+        "update.downloading_unknown": "Downloading update...",
         "update.source_mode": "Auto-update works only in the built LamzuBattery.exe.",
-        "cli.overlay_help": "desktop overlay window",
         "cli.debug_help": "verbose log",
         "cli.lang_help": "interface language (default: system)",
         "diagnose.version": "Version: {version}",
@@ -74,9 +72,10 @@ _STRINGS = {
     },
     "ru": {
         "menu.refresh": "Обновить сейчас",
-        "menu.desktop": "Показывать на рабочем столе",
         "menu.autostart": "Запускать при входе",
         "menu.logs": "Открыть журнал",
+        "menu.release_page": "Открыть страницу релиза",
+        "menu.auto_update": "Устанавливать обновления автоматически",
         "menu.check_updates": "Проверить обновления",
         "menu.language": "Язык",
         "menu.exit": "Выход",
@@ -98,18 +97,17 @@ _STRINGS = {
         "state.charging": "заряжается",
         "state.full": "заряжена",
         "state.unknown": "состояние {state}",
-        "overlay.no_data": "нет данных",
-        "overlay.stale": "данные устарели",
-        "overlay.no_connection": "нет связи",
-        "overlay.close": "Закрыть",
         "update.title": "Обновление",
         "update.checking": "Проверяю обновления...",
         "update.busy": "Проверка обновлений уже выполняется.",
         "update.latest": "Установлена последняя версия ({version}).",
+        "update.available": "Доступна версия {version}. Установите её через пункт меню обновления.",
         "update.installing": "Версия {version} установлена. Перезапуск...",
         "update.failed": "Не удалось обновить. Скачайте новую версию с GitHub.",
+        "update.failed_reason": "Не удалось обновить: {reason}. Откройте страницу релиза в меню.",
+        "update.downloading": "Скачиваю обновление... {percent}%",
+        "update.downloading_unknown": "Скачиваю обновление...",
         "update.source_mode": "Автообновление работает только в собранном LamzuBattery.exe.",
-        "cli.overlay_help": "окно на рабочем столе",
         "cli.debug_help": "подробный журнал",
         "cli.lang_help": "язык интерфейса (по умолчанию — системный)",
         "diagnose.version": "Версия: {version}",
