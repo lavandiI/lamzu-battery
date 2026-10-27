@@ -42,6 +42,9 @@ real Aurora hardware here.
   red — ≤ 15%, dark green — charging, light blue — no fresh data;
 - **UI language switch** between English and Russian (menu → Language); the
   choice is remembered, and the system language is used on first run;
+- **automatic updates**: on startup the app checks GitHub Releases, verifies
+  the SHA-256 of the new exe and replaces the current file wherever it is
+  located, then restarts itself; there is also a menu item to check manually;
 - **charging animation**: a highlight moves across the battery bar in the
   desktop overlay; the tray colour stays solid;
 - tooltip with model, percentage and state (`discharging`, `charging`, `full`);
@@ -114,6 +117,27 @@ autostart. Administrator rights are not required.
 
 On the first run of the new version, the old `LamzuThornBattery` autostart entry
 is migrated to `LamzuBattery` automatically.
+
+## Updates
+
+About 8 seconds after startup the app asks the GitHub Releases API for the
+latest version. If it is newer:
+
+1. the release asset `LamzuBattery.exe` is downloaded next to the currently
+   running exe — the path is taken from the running process, so the app can
+   live in any folder;
+2. the SHA-256 published by GitHub is verified;
+3. the current exe is renamed to `LamzuBattery.old.exe`, the new one takes its
+   place, and the app restarts itself;
+4. the old file is removed after the restart.
+
+No administrator rights are needed when the exe is in a user-writable folder.
+If the folder is protected (for example, `Program Files`) or the exe was moved
+somewhere read-only, automatic replacement will fail safely and the app keeps
+running; download the new version manually in that case.
+
+Menu → **Check for updates** runs the same check on demand. The current version
+and exe path are shown by `python diagnose.py`.
 
 ## Uninstall
 

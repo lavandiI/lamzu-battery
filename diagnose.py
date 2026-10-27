@@ -10,6 +10,7 @@ Works with any Lamzu model: Compx (usage page 0xFF02) and Aurora
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import hid
 
@@ -20,6 +21,8 @@ from lamzu import (
     read_battery,
     voltage_to_percent,
 )
+from updater import executable_path
+from version import APP_VERSION
 
 
 def main() -> None:
@@ -33,6 +36,14 @@ def main() -> None:
     args = parser.parse_args()
     i18n.set_language(args.lang or i18n.detect_system_language())
 
+    print(i18n.tr("diagnose.version", version=APP_VERSION))
+    executable = executable_path()
+    print(
+        i18n.tr(
+            "diagnose.executable",
+            path=executable or Path(__file__).resolve(),
+        )
+    )
     print(i18n.tr("diagnose.header"))
     found = 0
     controls = {item.path: item for item in discover_devices()}

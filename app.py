@@ -25,7 +25,9 @@ from typing import Optional
 
 import i18n
 import pystray
+import updater
 from PIL import Image, ImageDraw, ImageFont
+from version import APP_VERSION
 
 from lamzu import BatteryReading, present_product_ids, read_battery
 
@@ -317,6 +319,7 @@ class BatteryTray:
         self._stop = threading.Event()
         self._poll_lock = threading.Lock()
         self._icon_lock = threading.Lock()
+        self._update_lock = threading.Lock()
         self._overlay: Optional[subprocess.Popen] = None
         self._low_notified = False
         self._full_notified = False
@@ -331,6 +334,9 @@ class BatteryTray:
         )
         self._watch_thread = threading.Thread(
             target=self._watch_devices, name="device-watcher", daemon=True
+        )
+        self._update_thread = threading.Thread(
+            target=self._startup_update_check, name="update-checker", daemon=True
         )
 
     # --- меню -------------------------------------------------------------
@@ -358,6 +364,10 @@ class BatteryTray:
             ),
             pystray.MenuItem(
                 lambda item: i18n.tr("menu.logs"), self._on_open_logs
+            ),
+            pystray.MenuItem(
+                lambda item: i18n.tr("menu.check_updates"),
+                self._on_check_updates,
             ),
             pystray.MenuItem(
                 lambda item: i18n.tr("menu.language"),
@@ -536,11 +546,119 @@ class BatteryTray:
         except Exception:
             log.debug("notification failed", exc_info=True)
 
+    # --- обновления -------------------------------------------------------
+
+    def _on_check_updates(self, icon, item) -> None:
+        threading.Thread(
+            target=self._check_updates, args=(True,), daemon=True
+        ).start()
+
+    def _startup_update_check(self) -> None:
+        # Дать трею появиться и не мешать первому опросу мыши.
+        if self._stop.wait(8.0):
+            return
+        self._check_updates(manual=False)
+
+    def _notify_update_error(self, manual: bool) -> None:
+        if manual:
+            self._notify(
+                i18n.tr("update.failed"), i18n.tr("update.title")
+            )
+
+    def _check_updates(self, manual: bool) -> None:
+        if not self._update_lock.acquire(blocking=False):
+            if manual:
+                self._notify(
+                    i18n.tr("update.busy"), i18n.tr("update.title")
+                )
+            return
+        try:
+            # sys.executable указывает на реальный exe, даже если пользователь
+            # перенёс программу в другую папку.
+            target = updater.executable_path()
+            if target is None:
+                log.debug("update check skipped: running from source")
+                if manual:
+                    self._notify(
+                        i18n.tr("update.source_mode"),
+                        i18n.tr("update.title"),
+                    )
+                return
+
+            if manual:
+                self._notify(
+                    i18n.tr("update.checking"), i18n.tr("update.title")
+                )
+            try:
+                info = updater.check_for_update(APP_VERSION)
+            except Exception as exc:
+                log.warning("update check failed: %s", exc)
+                self._notify_update_error(manual)
+                return
+
+            if info is None:
+                log.debug("no update (current %s)", APP_VERSION)
+                if manual:
+                    self._notify(
+                        i18n.tr("update.latest", version=APP_VERSION),
+                        i18n.tr("update.title"),
+                    )
+                return
+
+            log.info(
+                "update available: %s (current %s), executable %s",
+                info.version,
+                APP_VERSION,
+                target,
+            )
+            new_path, backup_path = updater.update_paths(target)
+            try:
+                updater.download_update(info, new_path)
+            except Exception as exc:
+                log.warning("update download failed: %s", exc)
+                self._notify_update_error(manual)
+                return
+
+            if self._stop.is_set():
+                log.info("update cancelled: application is stopping")
+                return
+
+            try:
+                updater.replace_executable(target, new_path, backup_path)
+            except Exception as exc:
+                log.warning("update replacement failed: %s", exc)
+                self._notify_update_error(manual)
+                return
+
+            log.info("update installed, restarting %s", target)
+            try:
+                subprocess.Popen(
+                    [str(target), "--wait-for-instance"],
+                    cwd=str(target.parent),
+                    creationflags=CREATE_NO_WINDOW,
+                )
+            except Exception:
+                log.exception("could not start the updated application")
+                updater.rollback_executable(target, backup_path, new_path)
+                self._notify_update_error(manual)
+                return
+
+            self._notify(
+                i18n.tr("update.installing", version=info.version),
+                i18n.tr("update.title"),
+            )
+            time.sleep(1.5)
+            self._stop.set()
+            self._icon.stop()
+        finally:
+            self._update_lock.release()
+
     # --- файл состояния для оверлея --------------------------------------
 
     def _write_status(self, running: bool = True) -> None:
         payload = {
             "app": APP_NAME,
+            "version": APP_VERSION,
             "display_name": self._display_name(),
             "language": i18n.get_language(),
             "model": self._last.model if self._last else None,
@@ -650,16 +768,23 @@ class BatteryTray:
     # --- запуск -----------------------------------------------------------
 
     def run(self) -> None:
-        log.info("starting tray (%s)", APP_NAME)
+        log.info(
+            "starting tray (%s %s) from %s",
+            APP_NAME,
+            APP_VERSION,
+            updater.executable_path() or BASE_DIR,
+        )
         self._write_status(running=True)
         self._thread.start()
         self._watch_thread.start()
+        self._update_thread.start()
         try:
             self._icon.run()
         finally:
             self._stop.set()
             self._thread.join(timeout=2)
             self._watch_thread.join(timeout=1)
+            self._update_thread.join(timeout=1)
             self._kill_overlay()
             self._write_status(running=False)
             log.info("tray stopped")
@@ -916,18 +1041,40 @@ def main() -> int:
     parser.add_argument(
         "--debug", action="store_true", help=i18n.tr("cli.debug_help")
     )
+    parser.add_argument(
+        "--wait-for-instance", action="store_true", help=argparse.SUPPRESS
+    )
     args = parser.parse_args()
 
     if args.overlay:
         return run_overlay()
 
     setup_logging(args.debug)
+    executable = updater.executable_path()
+    log.info(
+        "LAMZU Battery %s, executable %s",
+        APP_VERSION,
+        executable or Path(__file__).resolve(),
+    )
     _migrate_legacy_autostart()
 
-    mutex = _acquire_mutex(MUTEX_TRAY)
+    mutex = None
+    if args.wait_for_instance:
+        # Новый exe запускается до выхода старого процесса: ждём, пока
+        # освободится mutex, вместо того чтобы сразу завершиться.
+        deadline = time.monotonic() + 45.0
+        while mutex is None and time.monotonic() < deadline:
+            mutex = _acquire_mutex(MUTEX_TRAY)
+            if mutex is None:
+                time.sleep(0.4)
+    else:
+        mutex = _acquire_mutex(MUTEX_TRAY)
     if mutex is None:
         log.info("another instance is already running")
         return 0
+
+    if executable is not None:
+        updater.cleanup_update_files(executable)
 
     BatteryTray().run()
     return 0

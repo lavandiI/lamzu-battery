@@ -24,4 +24,4 @@ jobs:
         run: python -m pytest -q
 
       - name: Check sources compile
-        run: python -m py_compile app.py lamzu.py diagnose.py
+        run: python -m py_compile app.py lamzu.py diagnose.py updater.py version.py
