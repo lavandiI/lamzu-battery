@@ -178,7 +178,6 @@ def _fit_icon_font(
     draw: ImageDraw.ImageDraw,
     text: str,
     icon_size: int,
-    stroke: int,
     condensed: bool,
     fill_ratio: float,
 ) -> tuple[ImageFont.ImageFont, tuple[int, int, int, int]]:
@@ -187,20 +186,20 @@ def _fit_icon_font(
     font_size = int(icon_size * 1.3)
     while font_size > 6:
         font = _font(font_size, condensed)
-        bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke)
+        bbox = draw.textbbox((0, 0), text, font=font)
         if bbox[2] - bbox[0] <= max_side and bbox[3] - bbox[1] <= max_side:
             return font, bbox
         font_size -= 1
 
     font = _font(6, condensed)
-    return font, draw.textbbox((0, 0), text, font=font, stroke_width=stroke)
+    return font, draw.textbbox((0, 0), text, font=font)
 
 
 _RENDER_LOCK = threading.Lock()
 
 
 def render_icon(text: str, color: tuple[int, int, int, int], size: int = 64) -> Image.Image:
-    """Иконка трея: максимально крупные цифры с чёрной обводкой.
+    """Иконка трея: максимально крупные цифры без обводки.
 
     Двузначные проценты набираются обычным Segoe UI Bold, трёхзначные —
     узким Bahnschrift Bold Condensed: так «100» тоже занимает почти всю
@@ -209,12 +208,11 @@ def render_icon(text: str, color: tuple[int, int, int, int], size: int = 64) -> 
     with _RENDER_LOCK:
         image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
-        stroke = max(2, size // 20)
         digits = text.isdigit()
         condensed = len(text) >= 3 and digits
         fill_ratio = 0.98 if digits else 0.82
 
-        font, bbox = _fit_icon_font(draw, text, size, stroke, condensed, fill_ratio)
+        font, bbox = _fit_icon_font(draw, text, size, condensed, fill_ratio)
         width = bbox[2] - bbox[0]
         height = bbox[3] - bbox[1]
         x = (size - width) / 2 - bbox[0]
@@ -225,8 +223,6 @@ def render_icon(text: str, color: tuple[int, int, int, int], size: int = 64) -> 
             text,
             font=font,
             fill=color,
-            stroke_width=stroke,
-            stroke_fill=(0, 0, 0, 255),
         )
         return image
 
