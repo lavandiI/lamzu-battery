@@ -58,7 +58,7 @@ Updates every **30 minutes**. While charging, it checks once a minute so it does
 not miss 100%. If the mouse is asleep and does not answer, it retries every
 20 seconds — including before the first reading after startup. Cable and dongle
 changes are watched separately and refresh the state immediately. You can also
-press **Refresh now** in the menu at any time.
+press **Refresh battery manually** in the menu at any time.
 
 ## Quick start
 
@@ -91,9 +91,9 @@ reliably.
 
 The mouse sleeps when idle and does not answer queries until it is moved. The
 app shows the last known value in light blue and retries every 20 seconds. Move
-the mouse and press **Refresh now** — the value updates immediately. After a
-successful reading, the next normal poll is in 30 minutes. This is a hardware
-limitation, not a bug.
+the mouse and press **Refresh battery manually** — the value updates
+immediately. After a successful reading, the next normal poll is in 30 minutes.
+This is a hardware limitation, not a bug.
 
 ## Where data is stored
 

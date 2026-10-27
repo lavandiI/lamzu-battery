@@ -15,7 +15,7 @@ LANGUAGE_NAMES = {"ru": "Русский", "en": "English"}
 
 _STRINGS = {
     "en": {
-        "menu.refresh": "Refresh now",
+        "menu.refresh": "Refresh battery manually",
         "menu.autostart": "Start with Windows",
         "menu.logs": "Open logs",
         "menu.release_page": "Open release page",
@@ -71,7 +71,7 @@ _STRINGS = {
         "diagnose.shown": "shown: {percent}%",
     },
     "ru": {
-        "menu.refresh": "Обновить сейчас",
+        "menu.refresh": "Обновить заряд вручную",
         "menu.autostart": "Запускать при входе",
         "menu.logs": "Открыть журнал",
         "menu.release_page": "Открыть страницу релиза",

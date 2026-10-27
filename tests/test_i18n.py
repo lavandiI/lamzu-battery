@@ -30,6 +30,7 @@ def test_current_language_and_formatting():
     assert i18n.set_language("ru") == "ru"
     assert i18n.tr("menu.language") == "Язык"
     assert i18n.tr("menu.check_updates") == "Проверить обновления"
+    assert i18n.tr("menu.refresh") == "Обновить заряд вручную"
     assert i18n.tr("status.offline", percent=42, age="5 мин") == (
         "42% · нет связи (5 мин)"
     )
@@ -40,6 +41,7 @@ def test_current_language_and_formatting():
     assert i18n.set_language("en") == "en"
     assert i18n.tr("menu.language") == "Language"
     assert i18n.tr("menu.check_updates") == "Check for updates"
+    assert i18n.tr("menu.refresh") == "Refresh battery manually"
     assert i18n.tr("status.offline", percent=42, age="5 min") == (
         "42% · no connection (5 min)"
     )
