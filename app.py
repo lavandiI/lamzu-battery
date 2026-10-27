@@ -636,6 +636,9 @@ class BatteryTray:
                     [str(target), "--wait-for-instance"],
                     cwd=str(target.parent),
                     creationflags=CREATE_NO_WINDOW,
+                    # Без очистки _PYI_* новый exe унаследует временную
+                    # папку старого bootloader и будет работать из неё.
+                    env=updater.clean_environment(),
                 )
             except Exception:
                 log.exception("could not start the updated application")
@@ -1074,7 +1077,16 @@ def main() -> int:
         return 0
 
     if executable is not None:
-        updater.cleanup_update_files(executable)
+        # Скачанный файл и .part можно убрать сразу, а старый exe может быть
+        # ещё занят bootloader'ом предыдущей версии — его удаляем в фоне,
+        # не задерживая появление трея.
+        updater.cleanup_update_files(executable, attempts=1)
+        threading.Thread(
+            target=updater.cleanup_backup,
+            args=(executable,),
+            name="update-cleanup",
+            daemon=True,
+        ).start()
 
     BatteryTray().run()
     return 0

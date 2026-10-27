@@ -84,6 +84,21 @@ def executable_path() -> Optional[Path]:
         return Path(sys.executable)
 
 
+def clean_environment() -> dict[str, str]:
+    """Environment for relaunching the frozen exe as a fresh instance.
+
+    PyInstaller sets ``_PYI_*`` variables for its child process. If they are
+    inherited by the updated exe, its bootloader treats it as a child of the
+    old process and reuses the old temporary extraction directory, which the
+    old bootloader removes on exit.
+    """
+    env = os.environ.copy()
+    for key in tuple(env):
+        if key.upper().startswith("_PYI_"):
+            env.pop(key, None)
+    return env
+
+
 def update_paths(target: Path) -> tuple[Path, Path]:
     """Return the download and backup paths next to the target exe."""
     target = Path(target)
@@ -346,6 +361,20 @@ def rollback_executable(
         return False
 
 
+def _remove_with_retries(path: Path, attempts: int, delay: float) -> None:
+    for attempt in range(attempts):
+        if not path.exists():
+            return
+        try:
+            path.unlink()
+            return
+        except OSError:
+            if attempt == attempts - 1:
+                log.debug("could not remove update file %s", path)
+                return
+            time.sleep(delay)
+
+
 def cleanup_update_files(
     target: Path,
     attempts: int = 20,
@@ -356,14 +385,19 @@ def cleanup_update_files(
     new_path, backup_path = update_paths(target)
     part_path = new_path.with_name(new_path.name + ".part")
     for path in (part_path, new_path, backup_path):
-        for attempt in range(attempts):
-            if not path.exists():
-                break
-            try:
-                path.unlink()
-                break
-            except OSError:
-                if attempt == attempts - 1:
-                    log.debug("could not remove update file %s", path)
-                    break
-                time.sleep(delay)
+        _remove_with_retries(path, attempts, delay)
+
+
+def cleanup_backup(
+    target: Path,
+    attempts: int = 240,
+    delay: float = 0.5,
+) -> None:
+    """Remove the old exe once the previous process releases it.
+
+    The old PyInstaller bootloader may keep the renamed exe open for a while,
+    so this is meant to run in a background thread after startup. It touches
+    only the backup file and never a download in progress.
+    """
+    _, backup_path = update_paths(target)
+    _remove_with_retries(backup_path, attempts, delay)

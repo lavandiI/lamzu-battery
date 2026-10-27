@@ -73,6 +73,17 @@ def test_executable_path_is_disabled_from_source():
     assert updater.executable_path() is None
 
 
+def test_clean_environment_strips_pyinstaller_vars(monkeypatch):
+    monkeypatch.setenv("_PYI_APPLICATION_HOME_DIR", "C:/temp/old")
+    monkeypatch.setenv("_PYI_ARCHIVE_FILE", "C:/temp/old/app.exe")
+    monkeypatch.setenv("LAMZU_KEEP_ME", "1")
+
+    env = updater.clean_environment()
+
+    assert env["LAMZU_KEEP_ME"] == "1"
+    assert not [key for key in env if key.upper().startswith("_PYI_")]
+
+
 def test_check_for_update_parses_release(monkeypatch):
     payload = _release_payload(data=b"MZ-new")
     monkeypatch.setattr(
@@ -212,4 +223,18 @@ def test_cleanup_update_files(tmp_path):
     assert not new_path.exists()
     assert not backup_path.exists()
     assert not part_path.exists()
+    assert target.read_bytes() == b"current"
+
+
+def test_cleanup_backup_keeps_download(tmp_path):
+    target = tmp_path / "LamzuBattery.exe"
+    target.write_bytes(b"current")
+    new_path, backup_path = updater.update_paths(target)
+    new_path.write_bytes(b"new")
+    backup_path.write_bytes(b"old")
+
+    updater.cleanup_backup(target, attempts=1)
+
+    assert not backup_path.exists()
+    assert new_path.read_bytes() == b"new"
     assert target.read_bytes() == b"current"
