@@ -14,7 +14,12 @@ import argparse
 import hid
 
 import i18n
-from lamzu import LAMZU_VENDOR_IDS, discover_devices, read_battery
+from lamzu import (
+    LAMZU_VENDOR_IDS,
+    discover_devices,
+    read_battery,
+    voltage_to_percent,
+)
 
 
 def main() -> None:
@@ -77,6 +82,17 @@ def main() -> None:
                 protocol=reading.protocol_text,
             )
         )
+        if reading.raw_percent is not None:
+            line = i18n.tr("diagnose.raw_level", percent=reading.raw_percent)
+            if reading.voltage_mv is not None:
+                calculated = voltage_to_percent(reading.voltage_mv)
+                line += "; " + i18n.tr(
+                    "diagnose.voltage",
+                    voltage=reading.voltage_mv,
+                    percent=calculated if calculated is not None else "—",
+                )
+            line += "; " + i18n.tr("diagnose.shown", percent=reading.percent)
+            print("  " + line)
 
 
 if __name__ == "__main__":

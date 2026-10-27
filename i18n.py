@@ -58,6 +58,9 @@ _STRINGS = {
             "Battery: no response. Move the mouse and try again."
         ),
         "diagnose.battery": "Battery: {percent}% ({state}), {model}, {protocol}",
+        "diagnose.raw_level": "level byte: {percent}%",
+        "diagnose.voltage": "voltage: {voltage} mV -> {percent}%",
+        "diagnose.shown": "shown: {percent}%",
     },
     "ru": {
         "menu.refresh": "Обновить сейчас",
@@ -101,6 +104,9 @@ _STRINGS = {
             "Заряд: нет ответа. Пошевелите мышь и запустите ещё раз."
         ),
         "diagnose.battery": "Заряд: {percent}% ({state}), {model}, {protocol}",
+        "diagnose.raw_level": "байт уровня: {percent} %",
+        "diagnose.voltage": "напряжение: {voltage} мВ -> {percent} %",
+        "diagnose.shown": "показано: {percent} %",
     },
 }
 

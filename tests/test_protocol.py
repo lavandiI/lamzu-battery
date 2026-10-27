@@ -4,7 +4,21 @@ These tests never touch real hardware: they build synthetic HID reports and
 check the parsers used by the tray application.
 """
 
+import pytest
+
 import lamzu
+
+
+def _compx_report(level=85, state=0, voltage_mv=4046):
+    report = [0] * 17
+    report[0] = 0x08
+    report[1] = 0x04
+    report[6] = level
+    report[7] = state
+    report[8] = (voltage_mv >> 8) & 0xFF
+    report[9] = voltage_mv & 0xFF
+    report[16] = (0x55 - sum(report[:16])) & 0xFF
+    return report
 
 
 def test_aurora_new_with_report_id():
@@ -39,7 +53,9 @@ def test_compx_with_checksum():
     report[7] = 1
     report[16] = (0x55 - sum(report[:16])) & 0xFF
 
-    assert lamzu._parse_compx(report) == lamzu.BatteryReading(percent=66, state=1)
+    assert lamzu._parse_compx(report) == lamzu.BatteryReading(
+        percent=66, state=1, raw_percent=66
+    )
 
 
 def test_compx_rejects_bad_checksum():
@@ -56,7 +72,57 @@ def test_compx_rejects_bad_checksum():
 def test_compx_without_report_id():
     report = [0x04, 0, 0, 0, 0, 55, 0, 0]
 
-    assert lamzu._parse_compx(report) == lamzu.BatteryReading(percent=55, state=0)
+    assert lamzu._parse_compx(report) == lamzu.BatteryReading(
+        percent=55, state=0, raw_percent=55
+    )
+
+
+@pytest.mark.parametrize(
+    ("voltage_mv", "expected"),
+    [
+        (4040, 85),
+        (4046, 86),
+        (4051, 87),
+        (4060, 90),
+        (4110, 100),
+    ],
+)
+def test_compx_precise_percent_from_voltage(voltage_mv, expected):
+    reading = lamzu._parse_compx(_compx_report(voltage_mv=voltage_mv))
+
+    assert reading is not None
+    assert reading.percent == expected
+    assert reading.raw_percent == 85
+    assert reading.voltage_mv == voltage_mv
+
+
+def test_compx_voltage_without_report_id():
+    report = [0x04, 0, 0, 0, 0, 55, 0, 0x0F, 0xCE]
+
+    reading = lamzu._parse_compx(report)
+
+    assert reading is not None
+    assert reading.percent == 86
+    assert reading.raw_percent == 55
+    assert reading.voltage_mv == 4046
+
+
+def test_compx_falls_back_to_raw_level_for_bad_voltage():
+    reading = lamzu._parse_compx(_compx_report(voltage_mv=0))
+
+    assert reading is not None
+    assert reading.percent == 85
+    assert reading.raw_percent == 85
+    assert reading.voltage_mv is None
+
+
+def test_voltage_curve_edges():
+    assert lamzu.voltage_to_percent(None) is None
+    assert lamzu.voltage_to_percent(0) is None
+    assert lamzu.voltage_to_percent(2499) is None
+    assert lamzu.voltage_to_percent(3050) == 0
+    assert lamzu.voltage_to_percent(3420) == 5
+    assert lamzu.voltage_to_percent(5001) is None
 
 
 def test_full_reading_while_plugged():

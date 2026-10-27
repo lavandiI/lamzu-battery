@@ -75,6 +75,58 @@ _WIRED_IDS = frozenset(
 
 log = logging.getLogger(__name__)
 
+# Официальная кривая BatteryParam из Config.ini LAMZU (без ведущего нуля):
+# 3050 мВ = 0 %, далее равномерные шаги по 5 % до 4110 мВ = 100 %.
+BATTERY_VOLTAGE_CURVE_MV = (
+    3050,
+    3420,
+    3480,
+    3540,
+    3600,
+    3660,
+    3720,
+    3760,
+    3800,
+    3840,
+    3880,
+    3920,
+    3940,
+    3960,
+    3980,
+    4000,
+    4020,
+    4040,
+    4060,
+    4080,
+    4110,
+)
+MIN_VALID_VOLTAGE_MV = 2500
+MAX_VALID_VOLTAGE_MV = 5000
+
+
+def voltage_to_percent(voltage_mv: Optional[int]) -> Optional[int]:
+    """Перевести напряжение Compx в процент по кривой официального ПО.
+
+    Между точками кривой значение интерполируется с точностью до 1 %.
+    Возвращает None, если напряжение отсутствует или выглядит недостоверным.
+    """
+    if voltage_mv is None or not (
+        MIN_VALID_VOLTAGE_MV <= voltage_mv <= MAX_VALID_VOLTAGE_MV
+    ):
+        return None
+    if voltage_mv <= BATTERY_VOLTAGE_CURVE_MV[0]:
+        return 0
+    if voltage_mv >= BATTERY_VOLTAGE_CURVE_MV[-1]:
+        return 100
+
+    for index in range(1, len(BATTERY_VOLTAGE_CURVE_MV)):
+        low = BATTERY_VOLTAGE_CURVE_MV[index - 1]
+        high = BATTERY_VOLTAGE_CURVE_MV[index]
+        if voltage_mv <= high:
+            base = (index - 1) * 5
+            return base + (voltage_mv - low) * 5 // (high - low)
+    return 100
+
 
 @dataclass(frozen=True)
 class BatteryReading:
@@ -83,6 +135,8 @@ class BatteryReading:
     model: Optional[str] = None
     protocol: str = ""
     product: Optional[str] = None
+    voltage_mv: Optional[int] = None
+    raw_percent: Optional[int] = None
 
     @property
     def charging(self) -> bool:
@@ -262,32 +316,61 @@ def present_product_ids() -> frozenset[tuple[int, int]]:
     )
 
 
+def _compx_voltage(data: list[int], offset: int) -> Optional[int]:
+    """Напряжение из двух байт ответа Compx (big-endian, мВ)."""
+    if len(data) < offset + 2:
+        return None
+    voltage_mv = (data[offset] << 8) | data[offset + 1]
+    if not (MIN_VALID_VOLTAGE_MV <= voltage_mv <= MAX_VALID_VOLTAGE_MV):
+        return None
+    return voltage_mv
+
+
 def _parse_compx(data: list[int]) -> Optional[BatteryReading]:
-    """Разобрать ответ Compx, принимая оба варианта (с report ID и без)."""
-    reading: Optional[BatteryReading] = None
+    """Разобрать ответ Compx, принимая оба варианта (с report ID и без).
+
+    Байт 6 — грубый уровень с шагом 5 %, байты 8-9 — напряжение в мВ.
+    Для точного процента используется напряжение и кривая официального ПО;
+    если напряжение недостоверно, остаётся грубый уровень.
+    """
+    raw_level: int
+    state: int
+    voltage_mv: Optional[int]
+
     if len(data) >= 17 and data[0] == COMPX_REPORT_ID and data[1] == COMPX_BATTERY_COMMAND:
-        level, state, checksum = data[6], data[7], data[16]
+        raw_level, state, checksum = data[6], data[7], data[16]
         expected = (0x55 - sum(data[:16])) & 0xFF
         if checksum != expected:
             log.debug(
                 "bad Compx checksum: got 0x%02x, expected 0x%02x", checksum, expected
             )
             return None
-        reading = BatteryReading(percent=level, state=state)
+        voltage_mv = _compx_voltage(data, 8)
     elif len(data) >= 16 and data[0] == COMPX_REPORT_ID and data[1] == COMPX_BATTERY_COMMAND:
         # Ответ без контрольной суммы — встречается у некоторых ревизий.
-        reading = BatteryReading(percent=data[6], state=data[7])
+        raw_level, state = data[6], data[7]
+        voltage_mv = _compx_voltage(data, 8)
     elif len(data) >= 7 and data[0] == COMPX_BATTERY_COMMAND:
         # Некоторые сборки hidapi/драйвера отдают ответ без report ID.
-        reading = BatteryReading(percent=data[5], state=data[6])
+        raw_level, state = data[5], data[6]
+        voltage_mv = _compx_voltage(data, 7)
     else:
         return None
 
-    if 0 <= reading.percent <= 100 and 0 <= reading.state <= 3:
-        return reading
+    if not (0 <= raw_level <= 100 and 0 <= state <= 3):
+        log.debug("unexpected Compx payload: %s", data)
+        return None
 
-    log.debug("unexpected Compx payload: %s", data)
-    return None
+    percent = voltage_to_percent(voltage_mv)
+    if percent is None:
+        percent = raw_level
+
+    return BatteryReading(
+        percent=percent,
+        state=state,
+        voltage_mv=voltage_mv,
+        raw_percent=raw_level,
+    )
 
 
 def _parse_aurora(data: list[int]) -> Optional[BatteryReading]:

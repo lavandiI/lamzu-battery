@@ -70,11 +70,10 @@ OVERLAY_POS_FILE = DATA_DIR / "overlay.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 LOG_FILE = DATA_DIR / "app.log"
 
-COLOR_NORMAL = (0, 229, 255, 255)       # яркий циан
+COLOR_NORMAL = (0, 122, 255, 255)       # синий
 COLOR_WARN = (255, 214, 10, 255)        # яркий жёлтый
 COLOR_LOW = (255, 59, 48, 255)          # яркий красный
-COLOR_CHARGE = (57, 255, 136, 255)      # неоново-зелёный
-COLOR_CHARGE_BRIGHT = (205, 255, 225, 255)  # верхняя точка пульсации
+COLOR_CHARGE = (0, 140, 70, 255)        # тёмно-зелёный
 COLOR_STALE = (184, 212, 255, 255)      # светло-голубой вместо тусклого серого
 
 # Обычное обновление — раз в 30 минут. Во время зарядки чаще, чтобы
@@ -210,7 +209,7 @@ def render_icon(text: str, color: tuple[int, int, int, int], size: int = 64) -> 
     with _RENDER_LOCK:
         image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
-        stroke = max(1, size // 64)
+        stroke = max(2, size // 20)
         digits = text.isdigit()
         condensed = len(text) >= 3 and digits
         fill_ratio = 0.98 if digits else 0.82
@@ -232,21 +231,6 @@ def render_icon(text: str, color: tuple[int, int, int, int], size: int = 64) -> 
         return image
 
 
-def _blend(
-    start: tuple[int, int, int, int],
-    end: tuple[int, int, int, int],
-    amount: float,
-) -> tuple[int, int, int, int]:
-    """Смешать два RGBA-цвета (amount 0..1)."""
-    amount = max(0.0, min(1.0, amount))
-    return (
-        round(start[0] + (end[0] - start[0]) * amount),
-        round(start[1] + (end[1] - start[1]) * amount),
-        round(start[2] + (end[2] - start[2]) * amount),
-        255,
-    )
-
-
 def _rgba_hex(color: tuple[int, int, int, int]) -> str:
     """Цвет PIL (RGBA) -> строка #RRGGBB для tkinter."""
     return f"#{color[0]:02X}{color[1]:02X}{color[2]:02X}"
@@ -254,14 +238,14 @@ def _rgba_hex(color: tuple[int, int, int, int]) -> str:
 
 def _status_color(percent: Optional[int], state: Optional[int], online: bool) -> str:
     if percent is None or not online:
-        return "#B8D4FF"
+        return _rgba_hex(COLOR_STALE)
     if state in (1, 2):
-        return "#39FF88"
+        return _rgba_hex(COLOR_CHARGE)
     if percent <= 15:
-        return "#FF3B30"
+        return _rgba_hex(COLOR_LOW)
     if percent <= 30:
-        return "#FFD60A"
-    return "#00E5FF"
+        return _rgba_hex(COLOR_WARN)
+    return _rgba_hex(COLOR_NORMAL)
 
 
 def autostart_command() -> str:
@@ -351,9 +335,6 @@ class BatteryTray:
         )
         self._watch_thread = threading.Thread(
             target=self._watch_devices, name="device-watcher", daemon=True
-        )
-        self._anim_thread = threading.Thread(
-            target=self._animate_charging, name="charge-animation", daemon=True
         )
 
     # --- меню -------------------------------------------------------------
@@ -507,24 +488,6 @@ class BatteryTray:
                 self._icon.title = self._tooltip()
         except Exception:
             log.exception("could not update tray icon")
-
-    def _animate_charging(self) -> None:
-        """Пульсировать зелёными цифрами, пока мышь заряжается."""
-        period = 1.6
-        while not self._stop.wait(0.12):
-            reading = self._last
-            if not (self._online and reading and reading.charging):
-                continue
-            phase = (math.sin(time.monotonic() * 2 * math.pi / period) + 1) / 2
-            color = _blend(COLOR_CHARGE, COLOR_CHARGE_BRIGHT, 0.15 + 0.65 * phase)
-            try:
-                with self._icon_lock:
-                    current = self._last
-                    if not (self._online and current and current.charging):
-                        continue
-                    self._icon.icon = render_icon(str(current.percent), color)
-            except Exception:
-                log.debug("charging animation failed", exc_info=True)
 
     def _tooltip(self) -> str:
         name = self._display_name()
@@ -695,14 +658,12 @@ class BatteryTray:
         self._write_status(running=True)
         self._thread.start()
         self._watch_thread.start()
-        self._anim_thread.start()
         try:
             self._icon.run()
         finally:
             self._stop.set()
             self._thread.join(timeout=2)
             self._watch_thread.join(timeout=1)
-            self._anim_thread.join(timeout=1)
             self._kill_overlay()
             self._write_status(running=False)
             log.info("tray stopped")
@@ -896,9 +857,6 @@ def run_overlay() -> int:
         phase = 0.0
         if online and charging:
             phase = (math.sin(now * 2 * math.pi / 1.6) + 1) / 2
-            color = _rgba_hex(
-                _blend(COLOR_CHARGE, COLOR_CHARGE_BRIGHT, 0.15 + 0.65 * phase)
-            )
 
         canvas.itemconfigure(header_item, text=display_name.upper())
         canvas.itemconfigure(

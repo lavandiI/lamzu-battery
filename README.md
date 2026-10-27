@@ -36,12 +36,14 @@ real Aurora hardware here.
 
 - battery percentage as **large digits** directly on the tray icon;
 - a condensed font is used for the three-digit `100`, so the digits stay large;
-- bright colours: cyan — normal, yellow — ≤ 30%, red — ≤ 15%, green — charging,
-  light blue — no fresh data;
+- **precise percentage with 1% steps** for Compx: it is calculated from the
+  battery voltage using the same curve as the official LAMZU software;
+- bold colours with a crisp dark outline: blue — normal, yellow — ≤ 30%,
+  red — ≤ 15%, dark green — charging, light blue — no fresh data;
 - **UI language switch** between English and Russian (menu → Language); the
   choice is remembered, and the system language is used on first run;
-- **charging animation**: the green tray digits pulse, and a highlight moves
-  across the battery bar in the desktop overlay;
+- **charging animation**: a highlight moves across the battery bar in the
+  desktop overlay; the tray colour stays solid;
 - tooltip with model, percentage and state (`discharging`, `charging`, `full`);
 - the menu shows the detected model, for example `LAMZU Thorn`;
 - notifications on low battery and when fully charged;
@@ -134,10 +136,16 @@ the official software.
 | Report ID | `8`, 17 bytes |
 | Command | `4` — battery / charging status |
 | Request | `08 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 49` |
-| Response | `08 04 00 00 00 02 <percent> <state> ... <checksum>` |
+| Response | `08 04 00 00 00 02 <level> <state> <voltage hi> <voltage lo> ... <checksum>` |
 | State | `0` — discharging, `1` — charging, `2` — full |
+| Voltage | bytes 8–9, big-endian millivolts |
+| Level | byte 6, coarse percentage in 5% steps (fallback) |
 
 Checksum: `(0x55 - sum(first 16 bytes)) & 0xFF`.
+
+The voltage is converted to a percentage with the official `BatteryParam`
+curve from LAMZU's `Config.ini`, interpolated to 1% steps. If the voltage is
+missing or implausible, the app falls back to the coarse level byte.
 
 ### Aurora
 
