@@ -1,3 +1,3 @@
 """Application version used by the updater and diagnostics."""
 
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.5.0"
