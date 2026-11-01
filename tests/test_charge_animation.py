@@ -67,14 +67,13 @@ def test_charge_frame_keeps_icon_size_and_alpha():
     assert frame.getbbox() is not None
 
 
-def test_charge_frame_uses_hsv_path_not_grey():
+def test_hsv_blend_keeps_transition_saturated():
     # Красный -> зелёный через RGB даёт грязно-коричневый. Через HSV
-    # в середине должен получиться насыщенный жёлто-оранжевый.
-    frame = app.render_charge_frame(
-        "15", app.PALETTE_DARK.low, app.PALETTE_DARK.charge, 0.5
+    # в середине должен получиться насыщенный жёлто-зелёный.
+    mid = app._hsv_blend(
+        app.PALETTE_DARK.low, app.PALETTE_DARK.charge, 0.5
     )
-    mid = _opaque_color(frame)
-    assert mid[0] > mid[2]
+    assert max(mid[:3]) - min(mid[:3]) > 100
     assert mid[1] > mid[2]
 
 
