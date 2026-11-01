@@ -7,11 +7,9 @@
 from __future__ import annotations
 
 import argparse
-import colorsys
 import ctypes
 import json
 import logging
-import math
 import os
 import subprocess
 import sys
@@ -19,7 +17,6 @@ import threading
 import time
 import webbrowser
 import winreg
-from dataclasses import dataclass
 from functools import lru_cache
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -79,76 +76,11 @@ LOG_FILE = DATA_DIR / "app.log"
 DEFAULT_UPDATE_MODE = "auto"
 UPDATE_MODES = ("auto", "notify")
 
-THEME_KEY = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-THEME_VALUE = "SystemUsesLightTheme"
-THEME_POLL_INTERVAL = 5.0
-
-
-@dataclass(frozen=True)
-class Palette:
-    """Цвета цифр для одной темы панели задач."""
-
-    normal: tuple[int, int, int, int]
-    warn: tuple[int, int, int, int]
-    low: tuple[int, int, int, int]
-    charge: tuple[int, int, int, int]
-    stale: tuple[int, int, int, int]
-
-
-PALETTE_DARK = Palette(
-    normal=(0, 122, 255, 255),       # синий
-    warn=(255, 214, 10, 255),        # яркий жёлтый
-    low=(255, 59, 48, 255),          # яркий красный
-    charge=(0, 140, 70, 255),        # тёмно-зелёный
-    stale=(184, 212, 255, 255),      # светло-голубой вместо серого
-)
-
-PALETTE_LIGHT = Palette(
-    normal=(11, 92, 173, 255),       # глубокий синий
-    warn=(161, 92, 0, 255),          # тёмный янтарный
-    low=(198, 40, 40, 255),          # глубокий красный
-    charge=(11, 107, 58, 255),       # тёмно-зелёный
-    stale=(90, 100, 115, 255),       # приглушённый slate
-)
-
-
-def palette_for(light_taskbar: bool) -> Palette:
-    return PALETTE_LIGHT if light_taskbar else PALETTE_DARK
-
-
-def state_color(
-    reading: BatteryReading, palette: Palette
-) -> tuple[int, int, int, int]:
-    """Цвет цифр для текущего состояния мыши."""
-    if reading.charging or reading.full:
-        return palette.charge
-    if reading.percent <= 15:
-        return palette.low
-    if reading.percent <= 30:
-        return palette.warn
-    return palette.normal
-
-
-def charge_start_color(
-    reading: BatteryReading, palette: Palette
-) -> tuple[int, int, int, int]:
-    """Стартовый цвет заливки: цвет состояния до начала зарядки."""
-    if reading.percent <= 15:
-        return palette.low
-    if reading.percent <= 30:
-        return palette.warn
-    return palette.normal
-
-
-def system_uses_light_theme() -> bool:
-    """True, если панель задач Windows сейчас светлая."""
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, THEME_KEY) as key:
-            value, _ = winreg.QueryValueEx(key, THEME_VALUE)
-        return int(value) == 1
-    except (OSError, TypeError, ValueError):
-        return False
-
+COLOR_NORMAL = (0, 122, 255, 255)       # синий
+COLOR_WARN = (255, 214, 10, 255)        # яркий жёлтый
+COLOR_LOW = (255, 59, 48, 255)          # яркий красный
+COLOR_CHARGE = (0, 140, 70, 255)        # тёмно-зелёный
+COLOR_STALE = (184, 212, 255, 255)      # светло-голубой вместо тусклого серого
 
 # Обычное обновление — раз в 30 минут. Во время зарядки чаще, чтобы
 # не пропустить 100%; после неудачного опроса — каждые 20 секунд, чтобы
@@ -156,12 +88,6 @@ def system_uses_light_theme() -> bool:
 POLL_INTERVAL = 30 * 60
 POLL_INTERVAL_CHARGING = 60
 POLL_INTERVAL_OFFLINE = 20
-
-# Заливка повторяется, пока мышь заряжается: 1.5 с анимации и 8.5 с паузы.
-CHARGE_ANIMATION_FRAMES = 15
-CHARGE_ANIMATION_FPS = 10
-CHARGE_ANIMATION_INTERVAL = 10.0
-CHARGE_ANIMATION_BAND = 5.0
 
 log = logging.getLogger("lamzu_tray")
 
@@ -313,29 +239,7 @@ def _fit_icon_font(
     return font, draw.textbbox((0, 0), text, font=font)
 
 
-_RENDER_LOCK = threading.RLock()
-
-
-@lru_cache(maxsize=32)
-def _digit_mask(text: str, size: int = 64) -> tuple[Image.Image, int, int]:
-    """Alpha-маска цифр и её вертикальные границы внутри иконки."""
-    with _RENDER_LOCK:
-        mask = Image.new("L", (size, size), 0)
-        draw = ImageDraw.Draw(mask)
-        digits = text.isdigit()
-        condensed = len(text) >= 3 and digits
-        fill_ratio = 0.98 if digits else 0.82
-
-        font, bbox = _fit_icon_font(draw, text, size, condensed, fill_ratio)
-        width = bbox[2] - bbox[0]
-        height = bbox[3] - bbox[1]
-        x = (size - width) / 2 - bbox[0]
-        y = (size - height) / 2 - bbox[1]
-
-        draw.text((x, y), text, font=font, fill=255)
-        top = max(0, int(math.floor(y + bbox[1])) - 1)
-        bottom = min(size, int(math.ceil(y + bbox[3])) + 1)
-        return mask, top, bottom
+_RENDER_LOCK = threading.Lock()
 
 
 def render_icon(text: str, color: tuple[int, int, int, int], size: int = 64) -> Image.Image:
@@ -346,67 +250,25 @@ def render_icon(text: str, color: tuple[int, int, int, int], size: int = 64) -> 
     высоту иконки, не превращаясь в нечитаемую мелочь.
     """
     with _RENDER_LOCK:
-        mask, _, _ = _digit_mask(text, size)
-        image = Image.new("RGBA", (size, size), color)
-        image.putalpha(mask)
-        return image
+        image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        digits = text.isdigit()
+        condensed = len(text) >= 3 and digits
+        fill_ratio = 0.98 if digits else 0.82
 
+        font, bbox = _fit_icon_font(draw, text, size, condensed, fill_ratio)
+        width = bbox[2] - bbox[0]
+        height = bbox[3] - bbox[1]
+        x = (size - width) / 2 - bbox[0]
+        y = (size - height) / 2 - bbox[1]
 
-def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
-    return max(low, min(high, value))
-
-
-def _smoothstep(value: float) -> float:
-    value = _clamp(value)
-    return value * value * (3.0 - 2.0 * value)
-
-
-def _hsv_blend(
-    first: tuple[int, int, int, int],
-    second: tuple[int, int, int, int],
-    t: float,
-) -> tuple[int, int, int, int]:
-    """Смешать цвета через HSV, чтобы красно-зелёный путь шёл не через грязь."""
-    t = _clamp(t)
-    r1, g1, b1 = (channel / 255.0 for channel in first[:3])
-    r2, g2, b2 = (channel / 255.0 for channel in second[:3])
-    h1, s1, v1 = colorsys.rgb_to_hsv(r1, g1, b1)
-    h2, s2, v2 = colorsys.rgb_to_hsv(r2, g2, b2)
-    hue_delta = (h2 - h1 + 0.5) % 1.0 - 0.5
-    hue = (h1 + hue_delta * t) % 1.0
-    saturation = s1 + (s2 - s1) * t
-    value = v1 + (v2 - v1) * t
-    r, g, b = colorsys.hsv_to_rgb(hue, saturation, value)
-    return (round(r * 255), round(g * 255), round(b * 255), 255)
-
-
-def render_charge_frame(
-    text: str,
-    start: tuple[int, int, int, int],
-    end: tuple[int, int, int, int],
-    progress: float,
-    size: int = 64,
-    band: float = CHARGE_ANIMATION_BAND,
-) -> Image.Image:
-    """Кадр заливки: снизу вверх, с мягкой границей между цветами."""
-    with _RENDER_LOCK:
-        mask, top, bottom = _digit_mask(text, size)
-        span = max(1, bottom - top)
-        front = bottom + band / 2 - (span + band) * _smoothstep(progress)
-        strip = Image.new("RGBA", (1, size))
-        strip.putdata(
-            [
-                _hsv_blend(
-                    start,
-                    end,
-                    (y - (front - band / 2)) / band,
-                )
-                for y in range(size)
-            ]
+        draw.text(
+            (x, y),
+            text,
+            font=font,
+            fill=color,
         )
-        gradient = strip.resize((size, size), Image.Resampling.NEAREST)
-        gradient.putalpha(mask)
-        return gradient
+        return image
 
 
 def autostart_command() -> str:
@@ -487,22 +349,13 @@ class BatteryTray:
         self._last_offered_version: Optional[str] = None
         self._last_update_error_at = 0.0
         self._progress_percent: Optional[int] = None
-        self._light_taskbar = system_uses_light_theme()
-        self._anim_lock = threading.Lock()
-        self._charge_anim_stop = threading.Event()
-        self._charge_anim_stop.set()
-        self._charge_anim_thread: Optional[threading.Thread] = None
-        self._anim_token = 0
-        self._animating = False
         settings = _load_settings()
         self._auto_update = (
             _normalize_update_mode(settings.get("update_mode")) == "auto"
         )
-        initial_color = self._palette().stale
-        self._icon_key = ("?", initial_color)
         self._icon = pystray.Icon(
             APP_ID,
-            render_icon("?", initial_color),
+            render_icon("?", COLOR_STALE),
             APP_NAME,
             menu=self._build_menu(),
         )
@@ -514,9 +367,6 @@ class BatteryTray:
         )
         self._update_thread = threading.Thread(
             target=self._update_loop, name="update-checker", daemon=True
-        )
-        self._theme_thread = threading.Thread(
-            target=self._watch_theme, name="theme-watcher", daemon=True
         )
 
     # --- меню -------------------------------------------------------------
@@ -574,9 +424,6 @@ class BatteryTray:
             pystray.MenuItem(lambda item: i18n.tr("menu.exit"), self._on_quit),
         )
 
-    def _palette(self) -> Palette:
-        return palette_for(self._light_taskbar)
-
     def _display_name(self) -> str:
         model = self._last.model if self._last else None
         return f"LAMZU {model}" if model else APP_NAME
@@ -613,18 +460,6 @@ class BatteryTray:
                 signature = current
                 self._poll()
 
-    def _watch_theme(self) -> None:
-        """Перекрашивать иконку, если Windows переключила тему панели задач."""
-        while not self._stop.wait(THEME_POLL_INTERVAL):
-            light = system_uses_light_theme()
-            if light != self._light_taskbar:
-                self._light_taskbar = light
-                log.info(
-                    "taskbar theme: %s",
-                    "light" if light else "dark",
-                )
-                self._apply()
-
     def _interval(self) -> float:
         if self._last is None or not self._online:
             # Спящая/отключённая мышь или ещё нет первого ответа: пробуем
@@ -657,10 +492,6 @@ class BatteryTray:
                 if self._online:
                     log.info("mouse did not respond (asleep or out of range)")
                 self._online = False
-            if self._online and self._last is not None and self._last.charging:
-                self._start_charge_animation()
-            else:
-                self._cancel_charge_animation()
             self._apply()
             self._write_status()
             # Меню на Windows строится один раз, поэтому динамические
@@ -672,153 +503,29 @@ class BatteryTray:
         finally:
             self._poll_lock.release()
 
-    # --- анимация зарядки -------------------------------------------------
-
-    def _start_charge_animation(self) -> None:
-        """Запустить повторяющийся fill, если он ещё не идёт."""
-        reading = self._last
-        if (
-            self._stop.is_set()
-            or not self._online
-            or reading is None
-            or not reading.charging
-        ):
-            return
-        with self._anim_lock:
-            thread = self._charge_anim_thread
-            if thread is not None and thread.is_alive():
-                return
-            self._charge_anim_stop.clear()
-            self._anim_token += 1
-            token = self._anim_token
-            thread = threading.Thread(
-                target=self._run_charge_animation,
-                args=(token,),
-                name="charge-animation",
-                daemon=True,
-            )
-            self._charge_anim_thread = thread
-        with self._icon_lock:
-            self._animating = True
-            self._icon_key = None
-        try:
-            thread.start()
-        except Exception:
-            log.exception("could not start charge animation")
-            with self._anim_lock:
-                self._charge_anim_thread = None
-            with self._icon_lock:
-                self._animating = False
-            self._apply()
-
-    def _cancel_charge_animation(self) -> None:
-        self._charge_anim_stop.set()
-        with self._anim_lock:
-            self._anim_token += 1
-        with self._icon_lock:
-            self._animating = False
-
-    def _run_charge_animation(self, token: int) -> None:
-        try:
-            if self._stop.is_set():
-                return
-
-            # До первого показа иконки pystray ещё не готов менять HICON.
-            deadline = time.monotonic() + 3.0
-            while not self._icon.visible and time.monotonic() < deadline:
-                if self._charge_anim_stop.wait(0.05):
-                    return
-            if not self._icon.visible:
-                log.debug("charge animation skipped: tray icon is not visible")
-                return
-
-            next_start = time.monotonic()
-            while not self._charge_anim_stop.is_set():
-                with self._icon_lock:
-                    if token != self._anim_token:
-                        return
-                    reading = self._last
-                    if (
-                        not self._online
-                        or reading is None
-                        or not reading.charging
-                    ):
-                        return
-                    text = str(reading.percent)
-                    start = charge_start_color(reading, self._palette())
-                    end = self._palette().charge
-                    self._animating = True
-                    self._icon_key = None
-
-                frames = [
-                    render_charge_frame(
-                        text,
-                        start,
-                        end,
-                        index / max(1, CHARGE_ANIMATION_FRAMES - 1),
-                    )
-                    for index in range(CHARGE_ANIMATION_FRAMES)
-                ]
-                for index, frame in enumerate(frames):
-                    if self._charge_anim_stop.is_set():
-                        return
-                    with self._icon_lock:
-                        if token != self._anim_token:
-                            return
-                        self._icon.icon = frame
-                    if index + 1 < len(frames):
-                        if self._charge_anim_stop.wait(
-                            1.0 / CHARGE_ANIMATION_FPS
-                        ):
-                            return
-
-                with self._icon_lock:
-                    if token != self._anim_token:
-                        return
-                    # Последний кадр уже зелёный: не пересоздаём HICON зря.
-                    self._icon_key = (text, end)
-                    self._animating = False
-                self._apply()
-
-                now = time.monotonic()
-                next_start += CHARGE_ANIMATION_INTERVAL
-                if next_start <= now:
-                    # After sleep/hibernation do not replay all missed cycles.
-                    next_start = now + CHARGE_ANIMATION_INTERVAL
-                if self._charge_anim_stop.wait(next_start - now):
-                    return
-        except Exception:
-            log.exception("charge animation failed")
-        finally:
-            with self._anim_lock:
-                if token == self._anim_token:
-                    self._animating = False
-                    self._charge_anim_thread = None
-            if not self._stop.is_set():
-                self._apply()
-
     def _apply(self) -> None:
         age = time.time() - self._last_ok if self._last else 0
-        palette = self._palette()
         if self._last is None:
-            text, color = "?", palette.stale
+            text, color = "?", COLOR_STALE
         elif self._online:
             text = str(self._last.percent)
-            color = state_color(self._last, palette)
+            if self._last.charging or self._last.full:
+                color = COLOR_CHARGE
+            elif self._last.percent <= 15:
+                color = COLOR_LOW
+            elif self._last.percent <= 30:
+                color = COLOR_WARN
+            else:
+                color = COLOR_NORMAL
         else:
-            # Показываем последнее значение приглушённым, пока оно не устарело.
+            # Показываем последнее значение светло-голубым, пока оно не устарело.
             text = str(self._last.percent) if age < 900 else "?"
-            color = palette.stale
+            color = COLOR_STALE
 
-        key = (text, color)
         try:
             with self._icon_lock:
+                self._icon.icon = render_icon(text, color)
                 self._icon.title = self._tooltip()
-                if self._animating:
-                    return
-                if key != self._icon_key:
-                    self._icon.icon = render_icon(text, color)
-                    self._icon_key = key
         except Exception:
             log.exception("could not update tray icon")
 
@@ -1124,7 +831,6 @@ class BatteryTray:
                 log.info("updated instance is healthy, stopping the old one")
                 self._handed_off = True
                 self._stop.set()
-                self._cancel_charge_animation()
                 self._icon.stop()
                 return
 
@@ -1164,7 +870,6 @@ class BatteryTray:
             if self._handed_off:
                 time.sleep(0.5)
                 self._stop.set()
-                self._cancel_charge_animation()
                 self._icon.stop()
         finally:
             self._update_lock.release()
@@ -1265,7 +970,6 @@ class BatteryTray:
 
     def _on_quit(self, icon, item) -> None:
         self._stop.set()
-        self._cancel_charge_animation()
         icon.stop()
 
     # --- запуск -----------------------------------------------------------
@@ -1283,21 +987,15 @@ class BatteryTray:
         self._health_timer.start()
         self._thread.start()
         self._watch_thread.start()
-        self._theme_thread.start()
         self._update_thread.start()
         try:
             self._icon.run()
         finally:
             self._stop.set()
-            self._cancel_charge_animation()
             if self._health_timer is not None:
                 self._health_timer.cancel()
             self._thread.join(timeout=2)
             self._watch_thread.join(timeout=1)
-            self._theme_thread.join(timeout=1)
-            animation_thread = self._charge_anim_thread
-            if animation_thread is not None:
-                animation_thread.join(timeout=1)
             self._update_thread.join(timeout=1)
             self._write_status(running=False)
             log.info("tray stopped")

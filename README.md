@@ -19,8 +19,6 @@ need the official Lamzu software to be running.
 
 ![Tray icon examples](docs/preview.png)
 
-![Charging fill animation](docs/charging-fill.gif)
-
 The app is universal: the model is detected from VID/PID and the product
 string, and the protocol from the control HID interface. Both known Lamzu
 families are supported:
@@ -41,9 +39,7 @@ real Aurora hardware here.
 - **precise percentage with 1% steps** for Compx: it is calculated from the
   battery voltage using the same curve as the official LAMZU software;
 - bold colours without an outline: blue — normal, yellow — ≤ 30%,
-  red — ≤ 15%, dark green — charging, muted — no fresh data; the palette
-  automatically adapts to a light or dark taskbar;
-- a short bottom-up fill animation while charging, repeated every 10 seconds;
+  red — ≤ 15%, dark green — charging, light blue — no fresh data;
 - **UI language switch** between English and Russian (menu → Language); the
   choice is remembered, and the system language is used on first run;
 - **automatic updates**: on startup and every six hours the app checks GitHub
