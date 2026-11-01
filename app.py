@@ -780,11 +780,12 @@ class BatteryTray:
                     self._animating = False
                 self._apply()
 
+                now = time.monotonic()
                 next_start += CHARGE_ANIMATION_INTERVAL
-                delay = next_start - time.monotonic()
-                if delay <= 0:
-                    delay = 0.05
-                if self._charge_anim_stop.wait(delay):
+                if next_start <= now:
+                    # After sleep/hibernation do not replay all missed cycles.
+                    next_start = now + CHARGE_ANIMATION_INTERVAL
+                if self._charge_anim_stop.wait(next_start - now):
                     return
         except Exception:
             log.exception("charge animation failed")
