@@ -77,10 +77,21 @@ DEFAULT_UPDATE_MODE = "auto"
 UPDATE_MODES = ("auto", "notify")
 
 COLOR_NORMAL = (0, 122, 255, 255)       # синий
-COLOR_WARN = (255, 214, 10, 255)        # яркий жёлтый
 COLOR_LOW = (255, 59, 48, 255)          # яркий красный
 COLOR_CHARGE = (0, 140, 70, 255)        # тёмно-зелёный
 COLOR_STALE = (184, 212, 255, 255)      # светло-голубой вместо тусклого серого
+
+
+def battery_color(
+    percent: int, charging: bool, full: bool
+) -> tuple[int, int, int, int]:
+    """Цвет цифр: зелёный при зарядке, красный ниже 30%, иначе синий."""
+    if charging or full:
+        return COLOR_CHARGE
+    if percent < 30:
+        return COLOR_LOW
+    return COLOR_NORMAL
+
 
 # Обычное обновление — раз в 30 минут. Во время зарядки чаще, чтобы
 # не пропустить 100%; после неудачного опроса — каждые 20 секунд, чтобы
@@ -509,14 +520,11 @@ class BatteryTray:
             text, color = "?", COLOR_STALE
         elif self._online:
             text = str(self._last.percent)
-            if self._last.charging or self._last.full:
-                color = COLOR_CHARGE
-            elif self._last.percent <= 15:
-                color = COLOR_LOW
-            elif self._last.percent <= 30:
-                color = COLOR_WARN
-            else:
-                color = COLOR_NORMAL
+            color = battery_color(
+                self._last.percent,
+                self._last.charging,
+                self._last.full,
+            )
         else:
             # Показываем последнее значение светло-голубым, пока оно не устарело.
             text = str(self._last.percent) if age < 900 else "?"
