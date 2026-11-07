@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import faulthandler
 import json
 import logging
 import os
@@ -73,6 +74,7 @@ DATA_DIR = _pick_data_dir()
 STATUS_FILE = DATA_DIR / "status.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 LOG_FILE = DATA_DIR / "app.log"
+CRASH_FILE = DATA_DIR / "crash.log"
 
 DEFAULT_UPDATE_MODE = "auto"
 UPDATE_MODES = ("auto", "notify")
@@ -178,6 +180,79 @@ def setup_logging(debug: bool = False) -> None:
         console = logging.StreamHandler()
         console.setFormatter(handler.formatter)
         root.addHandler(console)
+
+
+_FAULT_FILE = None
+
+
+def _show_crash_message() -> None:
+    try:
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            i18n.tr("crash.body"),
+            i18n.tr("crash.title"),
+            0x10,
+        )
+    except Exception:
+        pass
+
+
+def _unhandled_exception(exc_type, exc_value, exc_traceback) -> None:
+    if issubclass(exc_type, SystemExit):
+        return
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    log.critical(
+        "unhandled exception",
+        exc_info=(exc_type, exc_value, exc_traceback),
+    )
+    _show_crash_message()
+
+
+def _unhandled_thread(args) -> None:
+    if args.exc_type is SystemExit:
+        return
+    thread_name = args.thread.name if args.thread is not None else "unknown"
+    log.critical(
+        "unhandled exception in thread %s",
+        thread_name,
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+    )
+
+
+def install_exception_logging() -> None:
+    """Log Python and native crashes; a windowed exe has no stderr."""
+    global _FAULT_FILE
+    if _FAULT_FILE is None:
+        try:
+            if CRASH_FILE.exists() and CRASH_FILE.stat().st_size > 256 * 1024:
+                CRASH_FILE.unlink()
+        except OSError:
+            pass
+        try:
+            _FAULT_FILE = open(CRASH_FILE, "a", encoding="utf-8")
+            faulthandler.enable(file=_FAULT_FILE, all_threads=True)
+        except (OSError, RuntimeError, ValueError):
+            _FAULT_FILE = None
+    sys.excepthook = _unhandled_exception
+    threading.excepthook = _unhandled_thread
+
+
+def shutdown_exception_logging() -> None:
+    global _FAULT_FILE
+    try:
+        faulthandler.disable()
+    except Exception:
+        pass
+    if _FAULT_FILE is not None:
+        try:
+            _FAULT_FILE.close()
+        except OSError:
+            pass
+        _FAULT_FILE = None
+    sys.excepthook = sys.__excepthook__
+    threading.excepthook = threading.__excepthook__
 
 
 def _acquire_mutex(name: str):
@@ -1075,6 +1150,7 @@ def main() -> int:
     args = parser.parse_args()
 
     setup_logging(args.debug)
+    install_exception_logging()
     executable = updater.executable_path()
     log.info(
         "LAMZU Battery %s, executable %s",
@@ -1096,6 +1172,7 @@ def main() -> int:
         mutex = _acquire_mutex(MUTEX_TRAY)
     if mutex is None:
         log.info("another instance is already running")
+        shutdown_exception_logging()
         return 0
 
     if executable is not None:
@@ -1103,7 +1180,14 @@ def main() -> int:
         # .old.exe backup is kept until this instance reports healthy.
         updater.cleanup_download_files(executable, attempts=1)
 
-    BatteryTray(mutex).run()
+    try:
+        BatteryTray(mutex).run()
+    except Exception:
+        log.critical("fatal error", exc_info=True)
+        _show_crash_message()
+        return 1
+    finally:
+        shutdown_exception_logging()
     return 0
 
 

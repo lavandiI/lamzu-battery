@@ -241,6 +241,8 @@ python diagnose.py
 - The model may not be detected through a dongle that identifies itself as
   `Receiver`; the battery percentage is still read.
 - If the mouse is off or the dongle is unplugged, the app shows `?`.
+- If the app closes unexpectedly, check `data\app.log` and `data\crash.log`;
+  unhandled exceptions and native faults are written there.
 - Antivirus software may flag an unsigned PyInstaller executable — this is a
   common warning for self-built applications.
 

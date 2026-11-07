@@ -40,6 +40,10 @@ _STRINGS = {
         "tray.source_mode": (
             "This works only in the built LamzuBattery.exe."
         ),
+        "crash.title": "LAMZU Battery",
+        "crash.body": (
+            "LAMZU Battery crashed. See data\\app.log and data\\crash.log."
+        ),
         "age.just_now": "just now",
         "age.minutes": "{minutes} min",
         "age.hours": "{hours} h",
@@ -104,6 +108,11 @@ _STRINGS = {
         ),
         "tray.source_mode": (
             "Работает только в собранном LamzuBattery.exe."
+        ),
+        "crash.title": "LAMZU Battery",
+        "crash.body": (
+            "Приложение LAMZU Battery аварийно завершилось. "
+            "Подробности в data\\app.log и data\\crash.log."
         ),
         "age.just_now": "только что",
         "age.minutes": "{minutes} мин",
