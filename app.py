@@ -445,6 +445,7 @@ class BatteryTray:
         self._low_notified = False
         self._full_notified = False
         self._last_offered_version: Optional[str] = None
+        self._available_update: Optional[updater.UpdateInfo] = None
         self._last_update_error_at = 0.0
         self._last_update_check_at = 0.0
         self._last_update_error: Optional[str] = None
@@ -506,6 +507,18 @@ class BatteryTray:
             pystray.MenuItem(
                 lambda item: i18n.tr("menu.check_updates"),
                 self._on_check_updates,
+            ),
+            pystray.MenuItem(
+                lambda item: i18n.tr(
+                    "menu.install_update",
+                    version=(
+                        self._available_update.version
+                        if self._available_update
+                        else ""
+                    ),
+                ),
+                self._on_install_update,
+                visible=lambda item: self._available_update is not None,
             ),
             pystray.MenuItem(
                 lambda item: i18n.tr("menu.language"),
@@ -688,6 +701,13 @@ class BatteryTray:
             target=self._check_updates, args=(True,), daemon=True
         ).start()
 
+    def _on_install_update(self, icon, item) -> None:
+        if self._available_update is None:
+            return
+        threading.Thread(
+            target=self._check_updates, args=(True,), daemon=True
+        ).start()
+
     def _update_loop(self) -> None:
         # Дать трею появиться и не мешать первому опросу мыши.
         if self._stop.wait(8.0):
@@ -700,6 +720,8 @@ class BatteryTray:
                 log.exception("update loop failed")
                 ok = False
             failures, delay = _next_update_delay(ok, failures)
+            if not self._stop.is_set():
+                self._write_status()
             if self._stop.wait(delay):
                 return
 
@@ -848,6 +870,7 @@ class BatteryTray:
 
             self._last_update_error = None
             if info is None:
+                self._available_update = None
                 log.debug("no update (current %s)", APP_VERSION)
                 if manual:
                     self._notify(
@@ -856,6 +879,7 @@ class BatteryTray:
                     )
                 return True
 
+            self._available_update = info
             log.info(
                 "update available: %s (current %s), executable %s",
                 info.version,

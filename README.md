@@ -72,8 +72,8 @@ press **Refresh battery manually** in the menu at any time.
 2. Run it. On Windows 11 the app asks Explorer to pin the icon to the
    taskbar. If it is still hidden under "^", use **Show icon on taskbar** in
    the menu or enable it in Settings → Taskbar.
-3. Right-click the icon for the menu: refresh, autostart, logs, release page,
-   update settings and exit.
+3. Right-click the icon for the menu: refresh, autostart, data folder, release
+   page, update settings and exit.
 
 You do not need to run the official Lamzu software: mouse settings are stored on
 the device. The file is unsigned, so Windows SmartScreen may show a warning —
@@ -147,7 +147,8 @@ older than 24 hours is treated as stale and cleaned up automatically.
 
 The **Install updates automatically** menu item can be switched off. In that
 mode the app only notifies about a new version; **Check for updates** installs
-it on demand. The current version and exe path are shown by `python diagnose.py`.
+it on demand, and an **Install vX.Y.Z** item appears while an update is
+available. The current version and exe path are shown by `python diagnose.py`.
 
 No administrator rights are needed when the exe is in a user-writable folder.
 If the folder is protected (for example, `Program Files`) or the exe was moved
