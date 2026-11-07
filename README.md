@@ -52,6 +52,8 @@ real Aurora hardware here.
 - tooltip with model, percentage and state (`discharging`, `charging`, `full`);
 - the menu shows the detected model, for example `LAMZU Thorn`;
 - notifications on low battery and when fully charged;
+- on Windows 11 22H2+ the tray icon is pinned to the taskbar automatically
+  unless you hid it yourself; **Show icon on taskbar** restores it manually;
 - start with Windows;
 - detects cable/dongle plug and unplug immediately and refreshes the state;
 - no administrator rights and nothing installed system-wide.
@@ -67,8 +69,9 @@ press **Refresh battery manually** in the menu at any time.
 1. Download `LamzuBattery.exe` from the
    [Releases](https://github.com/lavandiI/lamzu-battery/releases/latest) page.
    Python and installation are not required — it is a single executable.
-2. Run it. The icon appears in the notification area. Windows 11 often hides
-   new icons under “^” — drag it onto the taskbar.
+2. Run it. On Windows 11 the app asks Explorer to pin the icon to the
+   taskbar. If it is still hidden under "^", use **Show icon on taskbar** in
+   the menu or enable it in Settings → Taskbar.
 3. Right-click the icon for the menu: refresh, autostart, logs, release page,
    update settings and exit.
 

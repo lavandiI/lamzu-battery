@@ -24,6 +24,7 @@ from typing import Optional
 
 import i18n
 import pystray
+import tray_visibility
 import updater
 from PIL import Image, ImageDraw, ImageFont
 from version import APP_VERSION
@@ -400,6 +401,10 @@ class BatteryTray:
             ),
             pystray.MenuItem(
                 lambda item: i18n.tr("menu.logs"), self._on_open_logs
+            ),
+            pystray.MenuItem(
+                lambda item: i18n.tr("menu.show_icon"),
+                self._on_show_tray_icon,
             ),
             pystray.MenuItem(
                 lambda item: i18n.tr("menu.release_page"),
@@ -966,6 +971,31 @@ class BatteryTray:
         except OSError:
             log.exception("could not open data folder")
 
+    def _on_show_tray_icon(self, icon, item) -> None:
+        threading.Thread(target=self._show_tray_icon, daemon=True).start()
+
+    def _show_tray_icon(self) -> None:
+        target = updater.executable_path()
+        if target is None:
+            self._notify(
+                i18n.tr("tray.source_mode"),
+                i18n.tr("tray.title"),
+            )
+            return
+        result = tray_visibility.promote(target)
+        log.info("tray promotion (manual): %s", result)
+        if result in (tray_visibility.PROMOTED, tray_visibility.ALREADY):
+            self._notify(
+                i18n.tr("tray.pinned_body"),
+                i18n.tr("tray.title"),
+            )
+            return
+        self._notify(
+            i18n.tr("tray.manual_body"),
+            i18n.tr("tray.title"),
+        )
+        tray_visibility.open_taskbar_settings()
+
     def _on_set_language(self, icon, language: str) -> None:
         language = i18n.set_language(language)
         _save_language(language)
@@ -984,6 +1014,24 @@ class BatteryTray:
 
     # --- запуск -----------------------------------------------------------
 
+    def _on_icon_ready(self, icon) -> None:
+        icon.visible = True
+        if getattr(sys, "frozen", False):
+            threading.Thread(
+                target=self._auto_promote_tray,
+                name="tray-promoter",
+                daemon=True,
+            ).start()
+
+    def _auto_promote_tray(self) -> None:
+        target = updater.executable_path()
+        if target is None or self._stop.is_set():
+            return
+        result = tray_visibility.promote_if_unconfigured(
+            target, stop_event=self._stop
+        )
+        log.info("tray promotion (auto): %s", result)
+
     def run(self) -> None:
         log.info(
             "starting tray (%s %s) from %s",
@@ -999,7 +1047,7 @@ class BatteryTray:
         self._watch_thread.start()
         self._update_thread.start()
         try:
-            self._icon.run()
+            self._icon.run(setup=self._on_icon_ready)
         finally:
             self._stop.set()
             if self._health_timer is not None:

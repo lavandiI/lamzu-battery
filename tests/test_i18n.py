@@ -65,3 +65,7 @@ def test_human_age():
 def test_unknown_language_falls_back_to_english():
     assert i18n.set_language("de") == "en"
     assert i18n.tr("menu.exit") == "Exit"
+
+
+def test_languages_have_the_same_keys():
+    assert set(i18n._STRINGS["en"]) == set(i18n._STRINGS["ru"])

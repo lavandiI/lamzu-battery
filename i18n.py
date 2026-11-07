@@ -18,6 +18,7 @@ _STRINGS = {
         "menu.refresh": "Refresh battery manually",
         "menu.autostart": "Start with Windows",
         "menu.logs": "Open logs",
+        "menu.show_icon": "Show icon on taskbar",
         "menu.release_page": "Open release page",
         "menu.auto_update": "Install updates automatically",
         "menu.check_updates": "Check for updates",
@@ -31,6 +32,14 @@ _STRINGS = {
         "notify.full_body": "{name}: {percent}%",
         "notify.low_title": "Low battery",
         "notify.low_body": "{name}: {percent}% — time to charge the mouse",
+        "tray.title": "Tray icon",
+        "tray.pinned_body": "The icon is pinned to the taskbar.",
+        "tray.manual_body": (
+            "If the icon is still hidden, enable it in Settings → Taskbar."
+        ),
+        "tray.source_mode": (
+            "This works only in the built LamzuBattery.exe."
+        ),
         "age.just_now": "just now",
         "age.minutes": "{minutes} min",
         "age.hours": "{hours} h",
@@ -74,6 +83,7 @@ _STRINGS = {
         "menu.refresh": "Обновить заряд вручную",
         "menu.autostart": "Запускать при входе",
         "menu.logs": "Открыть журнал",
+        "menu.show_icon": "Показать иконку на панели задач",
         "menu.release_page": "Открыть страницу релиза",
         "menu.auto_update": "Устанавливать обновления автоматически",
         "menu.check_updates": "Проверить обновления",
@@ -87,6 +97,14 @@ _STRINGS = {
         "notify.full_body": "{name}: {percent}%",
         "notify.low_title": "Низкий заряд",
         "notify.low_body": "{name}: {percent}% — пора зарядить мышь",
+        "tray.title": "Иконка в трее",
+        "tray.pinned_body": "Иконка закреплена на панели задач.",
+        "tray.manual_body": (
+            "Если иконка всё ещё скрыта, включите её в Параметры → Панель задач."
+        ),
+        "tray.source_mode": (
+            "Работает только в собранном LamzuBattery.exe."
+        ),
         "age.just_now": "только что",
         "age.minutes": "{minutes} мин",
         "age.hours": "{hours} ч",
