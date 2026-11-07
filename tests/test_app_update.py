@@ -39,6 +39,18 @@ def test_wait_for_new_instance_rejects_early_exit(tmp_path, monkeypatch):
     )
 
 
+def test_update_retry_backoff():
+    failures = 0
+    delays = []
+    for _ in range(6):
+        failures, delay = app._next_update_delay(False, failures)
+        delays.append(delay)
+
+    assert delays == [60, 300, 900, 3600, 21600, 21600]
+    assert failures == 6
+    assert app._next_update_delay(True, 5) == (0, app.UPDATE_CHECK_INTERVAL)
+
+
 def test_wait_for_new_instance_times_out(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "STATUS_FILE", tmp_path / "status.json")
     monkeypatch.setattr(app, "UPDATE_READY_TIMEOUT", 0.15)

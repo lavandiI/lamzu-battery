@@ -141,6 +141,10 @@ GitHub Releases API for the latest version. If it is newer:
 6. the previous version is kept until the health check passes, so a broken
    update can be rolled back.
 
+Transient network/GitHub errors are retried after 1, 5 and 15 minutes, then
+after 1 hour before returning to the normal six-hour schedule. A rollback copy
+older than 24 hours is treated as stale and cleaned up automatically.
+
 The **Install updates automatically** menu item can be switched off. In that
 mode the app only notifies about a new version; **Check for updates** installs
 it on demand. The current version and exe path are shown by `python diagnose.py`.

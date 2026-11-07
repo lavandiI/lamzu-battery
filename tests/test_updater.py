@@ -1,6 +1,8 @@
 import hashlib
 import io
 import json
+import os
+import time
 
 import pytest
 
@@ -261,6 +263,71 @@ def test_cleanup_download_files_keeps_backup(tmp_path):
     assert not part_path.exists()
     assert backup_path.read_bytes() == b"old"
     assert target.read_bytes() == b"current"
+
+
+def test_replace_with_retries_handles_busy_file(monkeypatch, tmp_path):
+    source = tmp_path / "source.exe"
+    destination = tmp_path / "destination.exe"
+    source.write_bytes(b"MZ-new")
+    calls = []
+    real_replace = updater.os.replace
+
+    def flaky_replace(src, dst):
+        calls.append((src, dst))
+        if len(calls) < 3:
+            raise PermissionError("file is busy")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(updater.os, "replace", flaky_replace)
+
+    updater._replace_with_retries(source, destination, attempts=3)
+
+    assert destination.read_bytes() == b"MZ-new"
+    assert len(calls) == 3
+
+
+def test_cleanup_stale_backup_removes_only_old_copy(tmp_path):
+    target = tmp_path / "LamzuBattery.exe"
+    target.write_bytes(b"current")
+    _, backup = updater.update_paths(target)
+    backup.write_bytes(b"old")
+    old_time = time.time() - updater.STALE_BACKUP_SECONDS - 60
+    os.utime(backup, (old_time, old_time))
+
+    assert updater.cleanup_stale_backup(target)
+    assert not backup.exists()
+
+
+def test_cleanup_stale_backup_keeps_fresh_copy(tmp_path):
+    target = tmp_path / "LamzuBattery.exe"
+    target.write_bytes(b"current")
+    _, backup = updater.update_paths(target)
+    backup.write_bytes(b"old")
+
+    assert not updater.cleanup_stale_backup(target)
+    assert backup.exists()
+
+
+def test_prepare_update_target_removes_stale_backup(tmp_path):
+    target = tmp_path / "LamzuBattery.exe"
+    target.write_bytes(b"current")
+    _, backup = updater.update_paths(target)
+    backup.write_bytes(b"old")
+    old_time = time.time() - updater.STALE_BACKUP_SECONDS - 60
+    os.utime(backup, (old_time, old_time))
+
+    assert updater.prepare_update_target(target, timeout=0.1)
+    assert not backup.exists()
+
+
+def test_prepare_update_target_reports_fresh_backup(tmp_path):
+    target = tmp_path / "LamzuBattery.exe"
+    target.write_bytes(b"current")
+    _, backup = updater.update_paths(target)
+    backup.write_bytes(b"old")
+
+    assert not updater.prepare_update_target(target, timeout=0.05)
+    assert backup.exists()
 
 
 def test_cleanup_backup_keeps_download(tmp_path):

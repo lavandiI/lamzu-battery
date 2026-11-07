@@ -34,6 +34,8 @@ MAX_UPDATE_BYTES = 200 * 1024 * 1024
 MAX_JSON_BYTES = 1024 * 1024
 CHUNK_SIZE = 256 * 1024
 UPDATE_FILE_MUTEX = "Local\\LamzuBatteryUpdateFiles"
+STALE_BACKUP_SECONDS = 24 * 60 * 60
+REPLACE_RETRY_DELAYS = (0.1, 0.25, 0.5, 1.0)
 
 _VERSION_RE = re.compile(r"(\d+(?:\.\d+)*)")
 _SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
@@ -392,7 +394,7 @@ def download_update(
                 pass
             raise UpdateError("downloaded file is not a Windows executable")
     try:
-        os.replace(part, destination)
+        _replace_with_retries(part, destination)
     except OSError as exc:
         try:
             part.unlink(missing_ok=True)
@@ -400,6 +402,29 @@ def download_update(
             pass
         raise UpdateError(f"could not save update: {exc}") from exc
     return destination
+
+
+def _replace_with_retries(
+    source: Path,
+    destination: Path,
+    attempts: int = 5,
+) -> None:
+    """Retry os.replace: antivirus/indexers can briefly lock the exe."""
+    last_error: Optional[OSError] = None
+    for attempt in range(attempts):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as exc:
+            last_error = exc
+            if attempt + 1 >= attempts:
+                break
+            time.sleep(
+                REPLACE_RETRY_DELAYS[
+                    min(attempt, len(REPLACE_RETRY_DELAYS) - 1)
+                ]
+            )
+    raise last_error or OSError("could not replace file")
 
 
 def replace_executable(
@@ -428,20 +453,29 @@ def replace_executable(
 
     with _update_file_lock():
         if backup_path.exists():
+            try:
+                age = time.time() - backup_path.stat().st_mtime
+            except OSError:
+                age = 0
+            if age >= STALE_BACKUP_SECONDS:
+                _remove_with_retries(
+                    backup_path, attempts=5, delay=0.2
+                )
+        if backup_path.exists():
             raise UpdateError(
                 "a previous update backup is still present; "
                 "wait for the update cleanup to finish"
             )
         try:
-            os.replace(target, backup_path)
+            _replace_with_retries(target, backup_path)
         except OSError as exc:
             raise UpdateError(f"could not move current exe: {exc}") from exc
 
         try:
-            os.replace(new_path, target)
+            _replace_with_retries(new_path, target)
         except OSError as exc:
             try:
-                os.replace(backup_path, target)
+                _replace_with_retries(backup_path, target)
             except OSError:
                 log.exception("could not restore the original exe")
             raise UpdateError(f"could not install update: {exc}") from exc
@@ -461,8 +495,8 @@ def rollback_executable(
         return False
     try:
         with _update_file_lock():
-            os.replace(target, new_path)
-            os.replace(backup_path, target)
+            _replace_with_retries(target, new_path)
+            _replace_with_retries(backup_path, target)
         return True
     except (OSError, UpdateError):
         log.exception("could not roll back the update")
@@ -523,3 +557,34 @@ def cleanup_backup(
     _remove_with_retries(
         backup_path, attempts, delay, use_lock=True
     )
+
+
+def cleanup_stale_backup(
+    target: Path,
+    max_age: float = STALE_BACKUP_SECONDS,
+    attempts: int = 5,
+) -> bool:
+    """Remove a rollback copy left behind by an old update."""
+    _, backup_path = update_paths(target)
+    if not backup_path.exists():
+        return False
+    try:
+        age = time.time() - backup_path.stat().st_mtime
+    except OSError:
+        return False
+    if age < max_age:
+        return False
+    _remove_with_retries(
+        backup_path, attempts, 0.2, use_lock=True
+    )
+    return not backup_path.exists()
+
+
+def prepare_update_target(target: Path, timeout: float = 10.0) -> bool:
+    """Wait for a normal backup cleanup and remove one that is clearly stale."""
+    _, backup_path = update_paths(target)
+    cleanup_stale_backup(target)
+    deadline = time.monotonic() + timeout
+    while backup_path.exists() and time.monotonic() < deadline:
+        time.sleep(0.25)
+    return not backup_path.exists()

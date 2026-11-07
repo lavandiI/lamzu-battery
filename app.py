@@ -41,6 +41,7 @@ LEGACY_RUN_VALUE = "LamzuThornBattery"
 CREATE_NO_WINDOW = 0x08000000
 RELEASES_URL = "https://github.com/lavandiI/lamzu-battery/releases/latest"
 UPDATE_CHECK_INTERVAL = 6 * 60 * 60
+UPDATE_RETRY_DELAYS = (60, 300, 900, 3600, 21600)
 HEALTH_DELAY = 5.0
 UPDATE_READY_TIMEOUT = 30.0
 
@@ -104,6 +105,16 @@ POLL_INTERVAL_CHARGING = 60
 POLL_INTERVAL_OFFLINE = 20
 
 log = logging.getLogger("lamzu_tray")
+
+
+def _next_update_delay(ok: bool, failures: int) -> tuple[int, float]:
+    """Return (new_failure_count, seconds_to_wait) for the update loop."""
+    if ok:
+        return 0, UPDATE_CHECK_INTERVAL
+    delay = UPDATE_RETRY_DELAYS[
+        min(failures, len(UPDATE_RETRY_DELAYS) - 1)
+    ]
+    return failures + 1, delay
 
 
 def _load_settings() -> dict:
@@ -435,6 +446,8 @@ class BatteryTray:
         self._full_notified = False
         self._last_offered_version: Optional[str] = None
         self._last_update_error_at = 0.0
+        self._last_update_check_at = 0.0
+        self._last_update_error: Optional[str] = None
         self._progress_percent: Optional[int] = None
         settings = _load_settings()
         self._auto_update = (
@@ -679,9 +692,15 @@ class BatteryTray:
         # Дать трею появиться и не мешать первому опросу мыши.
         if self._stop.wait(8.0):
             return
+        failures = 0
         while not self._stop.is_set():
-            self._check_updates(manual=False)
-            if self._stop.wait(UPDATE_CHECK_INTERVAL):
+            try:
+                ok = self._check_updates(manual=False)
+            except Exception:
+                log.exception("update loop failed")
+                ok = False
+            failures, delay = _next_update_delay(ok, failures)
+            if self._stop.wait(delay):
                 return
 
     def _on_toggle_auto_update(self, icon, item) -> None:
@@ -712,7 +731,7 @@ class BatteryTray:
         if len(detail) > 180:
             detail = detail[:177] + "..."
         now = time.time()
-        if not manual and stage == "check":
+        if not manual:
             if now - self._last_update_error_at < 24 * 60 * 60:
                 return
             self._last_update_error_at = now
@@ -794,13 +813,13 @@ class BatteryTray:
         log.warning("updated instance did not report readiness in time")
         return False
 
-    def _check_updates(self, manual: bool) -> None:
+    def _check_updates(self, manual: bool) -> bool:
         if not self._update_lock.acquire(blocking=False):
             if manual:
                 self._notify(
                     i18n.tr("update.busy"), i18n.tr("update.title")
                 )
-            return
+            return True
         try:
             # sys.executable указывает на реальный exe, даже если пользователь
             # перенёс программу в другую папку.
@@ -812,19 +831,22 @@ class BatteryTray:
                         i18n.tr("update.source_mode"),
                         i18n.tr("update.title"),
                     )
-                return
+                return True
 
             if manual:
                 self._notify(
                     i18n.tr("update.checking"), i18n.tr("update.title")
                 )
+            self._last_update_check_at = time.time()
             try:
                 info = updater.check_for_update(APP_VERSION)
             except Exception as exc:
                 log.warning("update check failed: %s", exc)
+                self._last_update_error = str(exc)
                 self._notify_update_error(manual, exc, "check")
-                return
+                return False
 
+            self._last_update_error = None
             if info is None:
                 log.debug("no update (current %s)", APP_VERSION)
                 if manual:
@@ -832,7 +854,7 @@ class BatteryTray:
                         i18n.tr("update.latest", version=APP_VERSION),
                         i18n.tr("update.title"),
                     )
-                return
+                return True
 
             log.info(
                 "update available: %s (current %s), executable %s",
@@ -847,23 +869,25 @@ class BatteryTray:
                         i18n.tr("update.available", version=info.version),
                         i18n.tr("update.title"),
                     )
-                return
+                return True
 
             new_path, backup_path = updater.update_paths(target)
-            if backup_path.exists():
+            if not updater.prepare_update_target(target, timeout=10.0):
                 error = updater.UpdateError(
                     "the previous update backup is still being cleaned up"
                 )
                 log.warning("update delayed: %s", error)
+                self._last_update_error = str(error)
                 self._notify_update_error(manual, error, "preflight")
-                return
+                return False
 
             try:
                 updater.ensure_update_target(target, info.asset_size)
             except Exception as exc:
                 log.warning("update preflight failed: %s", exc)
+                self._last_update_error = str(exc)
                 self._notify_update_error(manual, exc, "preflight")
-                return
+                return True
 
             try:
                 updater.download_update(
@@ -873,14 +897,15 @@ class BatteryTray:
                 )
             except Exception as exc:
                 log.warning("update download failed: %s", exc)
+                self._last_update_error = str(exc)
                 self._clear_progress()
                 self._notify_update_error(manual, exc, "download")
-                return
+                return True
 
             self._clear_progress()
             if self._stop.is_set():
                 log.info("update cancelled: application is stopping")
-                return
+                return True
 
             self._update_pending = True
             try:
@@ -888,8 +913,9 @@ class BatteryTray:
             except Exception as exc:
                 self._update_pending = False
                 log.warning("update replacement failed: %s", exc)
+                self._last_update_error = str(exc)
                 self._notify_update_error(manual, exc, "install")
-                return
+                return True
 
             log.info("update installed, restarting %s", target)
             try:
@@ -905,8 +931,9 @@ class BatteryTray:
                 log.exception("could not start the updated application")
                 updater.rollback_executable(target, backup_path, new_path)
                 self._update_pending = False
+                self._last_update_error = str(exc)
                 self._notify_update_error(manual, exc, "install")
-                return
+                return True
 
             self._notify(
                 i18n.tr("update.installing", version=info.version),
@@ -920,7 +947,7 @@ class BatteryTray:
                 self._handed_off = True
                 self._stop.set()
                 self._icon.stop()
-                return
+                return True
 
             log.error("updated instance failed the health check; rolling back")
             try:
@@ -959,6 +986,12 @@ class BatteryTray:
                 time.sleep(0.5)
                 self._stop.set()
                 self._icon.stop()
+            return True
+        except Exception as exc:
+            log.exception("update check crashed")
+            self._last_update_error = str(exc)
+            self._notify_update_error(manual, exc, "check")
+            return False
         finally:
             self._update_lock.release()
 
@@ -990,6 +1023,12 @@ class BatteryTray:
             "full": bool(self._last and self._last.full),
             "updated_unix": int(self._last_ok) if self._last else None,
             "polled_unix": int(time.time()),
+            "update_last_check_unix": (
+                int(self._last_update_check_at)
+                if self._last_update_check_at
+                else None
+            ),
+            "update_last_error": self._last_update_error,
         }
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
