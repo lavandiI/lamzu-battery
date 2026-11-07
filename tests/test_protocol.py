@@ -96,6 +96,58 @@ def test_compx_precise_percent_from_voltage(voltage_mv, expected):
     assert reading.voltage_mv == voltage_mv
 
 
+def test_compx_charging_uses_raw_above_eighty_percent():
+    reading = lamzu._parse_compx(
+        _compx_report(level=95, state=1, voltage_mv=4230)
+    )
+
+    assert reading is not None
+    assert reading.percent == 95
+    assert reading.raw_percent == 95
+    assert reading.voltage_mv == 4230
+    assert reading.charging
+
+
+def test_compx_charging_keeps_voltage_precision_up_to_eighty_percent():
+    reading = lamzu._parse_compx(
+        _compx_report(level=80, state=1, voltage_mv=3990)
+    )
+
+    assert reading is not None
+    assert reading.percent == 72
+    assert reading.raw_percent == 80
+
+
+def test_compx_charging_caps_above_eighty_percent():
+    reading = lamzu._parse_compx(
+        _compx_report(level=80, state=1, voltage_mv=4024)
+    )
+
+    assert reading is not None
+    assert reading.percent == 80
+    assert reading.raw_percent == 80
+
+
+def test_compx_full_state_reports_hundred():
+    reading = lamzu._parse_compx(
+        _compx_report(level=95, state=2, voltage_mv=4200)
+    )
+
+    assert reading is not None
+    assert reading.percent == 100
+    assert reading.full
+
+
+def test_compx_discharging_keeps_voltage_precision():
+    reading = lamzu._parse_compx(
+        _compx_report(level=65, state=0, voltage_mv=3967)
+    )
+
+    assert reading is not None
+    assert reading.percent == 66
+    assert reading.raw_percent == 65
+
+
 def test_compx_voltage_without_report_id():
     report = [0x04, 0, 0, 0, 0, 55, 0, 0x0F, 0xCE]
 

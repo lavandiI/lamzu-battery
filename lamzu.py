@@ -365,6 +365,14 @@ def _parse_compx(data: list[int]) -> Optional[BatteryReading]:
     if percent is None:
         percent = raw_level
 
+    # Above 80% while charging, voltage is held high by the charger and
+    # overestimates the remaining capacity. Use the device's 5% level there
+    # so the icon does not show 100% before the CV phase has finished.
+    if state == 1 and percent > 80 and raw_level >= 80:
+        percent = min(percent, raw_level)
+    elif state == 2:
+        percent = 100
+
     return BatteryReading(
         percent=percent,
         state=state,

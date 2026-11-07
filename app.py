@@ -904,6 +904,8 @@ class BatteryTray:
             "online": self._online,
             "percent": self._last.percent if self._last else None,
             "state": self._last.state if self._last else None,
+            "raw_percent": self._last.raw_percent if self._last else None,
+            "voltage_mv": self._last.voltage_mv if self._last else None,
             "charging": bool(self._last and self._last.charging),
             "full": bool(self._last and self._last.full),
             "updated_unix": int(self._last_ok) if self._last else None,
