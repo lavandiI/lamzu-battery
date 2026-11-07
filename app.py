@@ -694,6 +694,12 @@ class BatteryTray:
         except Exception:
             log.debug("notification failed", exc_info=True)
 
+    def _refresh_menu(self) -> None:
+        try:
+            self._icon.update_menu()
+        except Exception:
+            log.debug("could not update tray menu", exc_info=True)
+
     # --- обновления -------------------------------------------------------
 
     def _on_check_updates(self, icon, item) -> None:
@@ -871,6 +877,7 @@ class BatteryTray:
             self._last_update_error = None
             if info is None:
                 self._available_update = None
+                self._refresh_menu()
                 log.debug("no update (current %s)", APP_VERSION)
                 if manual:
                     self._notify(
@@ -880,6 +887,7 @@ class BatteryTray:
                 return True
 
             self._available_update = info
+            self._refresh_menu()
             log.info(
                 "update available: %s (current %s), executable %s",
                 info.version,
