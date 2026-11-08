@@ -84,7 +84,7 @@ def test_compx_without_report_id():
         (4046, 86),
         (4051, 87),
         (4060, 90),
-        (4110, 100),
+        (4110, 99),
     ],
 )
 def test_compx_precise_percent_from_voltage(voltage_mv, expected):
@@ -94,6 +94,22 @@ def test_compx_precise_percent_from_voltage(voltage_mv, expected):
     assert reading.percent == expected
     assert reading.raw_percent == 85
     assert reading.voltage_mv == voltage_mv
+
+
+def test_compx_voltage_hundred_is_capped_until_raw_hundred():
+    below_full = lamzu._parse_compx(
+        _compx_report(level=95, state=0, voltage_mv=4113)
+    )
+    full = lamzu._parse_compx(
+        _compx_report(level=100, state=0, voltage_mv=4113)
+    )
+
+    assert below_full is not None
+    assert below_full.percent == 99
+    assert below_full.raw_percent == 95
+    assert full is not None
+    assert full.percent == 100
+    assert full.raw_percent == 100
 
 
 def test_compx_charging_uses_raw_above_eighty_percent():
@@ -128,14 +144,20 @@ def test_compx_charging_caps_above_eighty_percent():
     assert reading.raw_percent == 80
 
 
-def test_compx_full_state_reports_hundred():
-    reading = lamzu._parse_compx(
+def test_compx_full_state_reports_hundred_only_with_raw_hundred():
+    raw_95 = lamzu._parse_compx(
         _compx_report(level=95, state=2, voltage_mv=4200)
     )
+    raw_100 = lamzu._parse_compx(
+        _compx_report(level=100, state=2, voltage_mv=4200)
+    )
 
-    assert reading is not None
-    assert reading.percent == 100
-    assert reading.full
+    assert raw_95 is not None
+    assert raw_95.percent == 99
+    assert raw_95.full
+    assert raw_100 is not None
+    assert raw_100.percent == 100
+    assert raw_100.full
 
 
 def test_compx_discharging_keeps_voltage_precision():

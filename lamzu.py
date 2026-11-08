@@ -370,6 +370,8 @@ def _parse_compx(data: list[int]) -> Optional[BatteryReading]:
     # so the icon does not show 100% before the CV phase has finished.
     if state == 1 and percent > 80 and raw_level >= 80:
         percent = min(percent, raw_level)
+    if raw_level < 100:
+        percent = min(percent, 99)
     elif state == 2:
         percent = 100
 

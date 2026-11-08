@@ -38,8 +38,9 @@ real Aurora hardware here.
 - a condensed font is used for the three-digit `100`, so the digits stay large;
 - **precise percentage with 1% steps** for Compx while discharging: it is
   calculated from the battery voltage using the same curve as the official
-  LAMZU software; while charging above 80% the device's 5% level is used so
-  the icon does not show 100% before the battery is actually full;
+  LAMZU software; while charging above 80% the device's 5% level is used, and
+  100% is shown only when the device itself reports raw level 100 — otherwise
+  the top is capped at 99%;
 - bold colours without an outline: blue — normal, red — below 30%,
   dark green — charging, light blue — no fresh data;
 - **UI language switch** between English and Russian (menu → Language); the
