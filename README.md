@@ -26,8 +26,9 @@ families are supported:
 - **Compx** — Thorn, Atlantis, Maya and other Compx/Nordic mice;
 - **Aurora** — Maya X, Inca, Paro, Maya Champion and other recent models.
 
-Tested on a LAMZU Thorn while charging over cable (`3554:F50F`, Compx).
-Aurora support is based on public protocol descriptions
+Tested on a LAMZU Thorn while charging over cable (`3554:F50F`) and through the
+1K dongle (`3554:F50D`), both Compx. Aurora support is based on public protocol
+descriptions
 ([mouse_tray](https://github.com/Fan4Metal/mouse_tray),
 [lamzu-ctl](https://github.com/anany1702/lamzu-ctl)), but has not been tested on
 real Aurora hardware here.
@@ -35,26 +36,30 @@ real Aurora hardware here.
 ## Features
 
 - battery percentage as **large digits** directly on the tray icon;
-- a condensed font is used for the three-digit `100`, so the digits stay large;
+- a condensed font is used for two- and three-digit values, so the digits
+  stay large;
 - **precise percentage with 1% steps** for Compx while discharging: it is
   calculated from the battery voltage using the same curve as the official
   LAMZU software; while charging above 80% the device's 5% level is used, and
   100% is shown only when the device itself reports raw level 100 — otherwise
   the top is capped at 99%;
 - bold colours without an outline: blue — normal, red — below 30%,
-  dark green — charging, light blue — no fresh data;
+  dark green — charging, light blue — no fresh data; on a light taskbar the
+  palette switches to darker shades so the digits stay readable;
 - **UI language switch** between English and Russian (menu → Language); the
   choice is remembered, and the system language is used on first run;
 - **automatic updates**: on startup and every six hours the app checks GitHub
   Releases, verifies the SHA-256 of the new exe, replaces the current file
   wherever it is located, checks that the new instance started correctly and
-  only then removes the rollback copy; automatic installation can be disabled
-  in the menu, and updates can also be checked manually;
+  keeps the rollback copy for about an hour; automatic installation can be
+  disabled in the menu, and updates can also be checked manually;
 - tooltip with model, percentage and state (`discharging`, `charging`, `full`);
 - the menu shows the detected model, for example `LAMZU Thorn`;
 - notifications on low battery and when fully charged;
 - on Windows 11 22H2+ the tray icon is pinned to the taskbar automatically
-  unless you hid it yourself; **Show icon on taskbar** restores it manually;
+  unless you hid it yourself; **Show icon on taskbar** restores it manually.
+  This writes `IsPromoted` under the undocumented
+  `HKCU\Control Panel\NotifyIconSettings` key, so it is always best-effort;
 - start with Windows;
 - detects cable/dongle plug and unplug immediately and refreshes the state;
 - no administrator rights and nothing installed system-wide.
@@ -84,7 +89,7 @@ this is normal for small open-source projects.
 
 | Family | Examples | Protocol | Status |
 | --- | --- | --- | --- |
-| Compx | Thorn, Atlantis, Maya, 1K/4K/8K dongles `3554:F50D/F50F/F510` | report ID 8, usage page `0xFF02` | Thorn tested; others use the common Compx protocol |
+| Compx | Thorn, Atlantis, Maya, 1K/4K/8K dongles `3554:F50D/F50F/F510` | report ID 8, usage page `0xFF02` | Thorn (cable and 1K dongle) tested; others use the common Compx protocol |
 | Aurora | Maya X (`373E:001E/001C`), Inca (`37B0:0010/0009`), Paro, Maya Champion | feature report, usage page `0xFFFF`, interface 2 | based on the public protocol, not tested on hardware |
 
 The model comes from the product string (`LAMZU THORN` → `Thorn`) or from a
@@ -136,20 +141,26 @@ GitHub Releases API for the latest version. If it is newer:
 3. the SHA-256 published by GitHub is verified;
 4. the current exe is renamed to `LamzuBattery.old.exe`, the new one takes its
    place, and the app restarts itself;
-5. the new instance reports that its tray is healthy within 30 seconds; only
-   then is the old file removed. If it fails to start, the old exe is restored
-   automatically and the error is written to the log;
-6. the previous version is kept until the health check passes, so a broken
-   update can be rolled back.
+5. the new instance reports that its tray is healthy within 30 seconds; the
+   previous exe is kept next to it as `LamzuBattery.old.exe` for about an hour
+   (and removed before the next update), so a broken update can be rolled back
+   by hand even if the defect shows up later. If the new instance fails to
+   start, the old exe is restored automatically and the error is written to the
+   log.
 
 Transient network/GitHub errors are retried after 1, 5 and 15 minutes, then
-after 1 hour before returning to the normal six-hour schedule. A rollback copy
-older than 24 hours is treated as stale and cleaned up automatically.
+after 1 hour before returning to the normal six-hour schedule. The rollback
+copy is removed about an hour after a successful start and, on a later start,
+once it is older than 24 hours.
 
 The **Install updates automatically** menu item can be switched off. In that
 mode the app only notifies about a new version; **Check for updates** installs
-it on demand, and an **Install vX.Y.Z** item appears while an update is
+it on demand, and an **Install X.Y.Z** item appears while an update is
 available. The current version and exe path are shown by `python diagnose.py`.
+
+The release asset must carry a SHA-256 `digest` in the GitHub API response; a
+release without it is refused on purpose, so an update can never be installed
+unverified.
 
 No administrator rights are needed when the exe is in a user-writable folder.
 If the folder is protected (for example, `Program Files`) or the exe was moved
@@ -229,6 +240,12 @@ Tests (protocol parsers and request layouts, no hardware access):
 python -m pytest -q
 ```
 
+Lint (ruff is installed by `requirements-dev.txt`):
+
+```bat
+python -m ruff check .
+```
+
 Diagnostics (lists all Lamzu HID interfaces, model and protocol, and tries to
 read the battery):
 
@@ -251,6 +268,22 @@ python diagnose.py
   unhandled exceptions and native faults are written there.
 - Antivirus software may flag an unsigned PyInstaller executable — this is a
   common warning for self-built applications.
+
+## Troubleshooting
+
+- **The icon shows `?`** — the mouse is off, asleep or out of range. Move it and
+  use **Refresh battery manually**; the app also retries every 20 seconds.
+- **The update left two icons or did not finish** — a failed update keeps the
+  previous executable as `LamzuBattery.old.exe`. Close the app, rename that file
+  to `LamzuBattery.exe` and start it again; the details are in `data\app.log`.
+- **The app does not start** — check `data\app.log` and `data\crash.log` next to
+  the exe; the log also names the data folder it uses. `python diagnose.py`
+  prints the version, the exe path and every Lamzu HID interface.
+- **The model is not detected** — a dongle may report itself as `Receiver`, or
+  an Aurora model may use a different report layout; the battery is still read.
+  Attach the output of `python diagnose.py` to an issue.
+- **Settings are not remembered** — the app needs write access to its `data`
+  folder; if it is read-only, settings live in `%LOCALAPPDATA%\LamzuBattery`.
 
 ## Alternatives
 
