@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import os
+import stat
 import time
 
 import pytest
@@ -62,6 +63,15 @@ def test_parse_and_compare_versions():
     assert not updater.is_newer("garbage", "1.2.1")
 
 
+def test_same_version_normalizes_release_form():
+    assert updater.same_version("v1.6", "1.6.0")
+    assert updater.same_version("1.6.0.0", "1.6")
+    assert updater.same_version("1.5.10", "v1.5.10")
+    assert not updater.same_version("1.6.1", "1.6.0")
+    assert not updater.same_version("", "1.6.0")
+    assert not updater.same_version("garbage", "1.6.0")
+
+
 def test_update_paths_use_actual_exe_name(tmp_path):
     target = tmp_path / "Custom Name.exe"
 
@@ -100,7 +110,6 @@ def test_check_for_update_parses_release(monkeypatch):
 
     assert info is not None
     assert info.version == "1.3.0"
-    assert info.tag == "v1.3.0"
     assert info.asset_size == len(b"MZ-new")
     assert info.digest == hashlib.sha256(b"MZ-new").hexdigest()
 
@@ -131,6 +140,24 @@ def test_check_for_update_requires_digest(monkeypatch):
 
     with pytest.raises(updater.UpdateError):
         updater.check_for_update("1.2.1")
+
+
+def test_check_for_update_accepts_any_repository_case(monkeypatch):
+    payload = _release_payload(
+        asset_url=(
+            "https://github.com/Lavandii/Lamzu-Battery/releases/download/"
+            "v1.3.0/LamzuBattery.exe"
+        )
+    )
+    monkeypatch.setattr(
+        updater,
+        "_open_url",
+        lambda url, timeout, accept: FakeResponse(
+            json.dumps(payload).encode("utf-8"), url
+        ),
+    )
+
+    assert updater.check_for_update("1.2.1") is not None
 
 
 def test_check_for_update_rejects_untrusted_url(monkeypatch):
@@ -320,14 +347,51 @@ def test_prepare_update_target_removes_stale_backup(tmp_path):
     assert not backup.exists()
 
 
-def test_prepare_update_target_reports_fresh_backup(tmp_path):
+def test_prepare_update_target_removes_a_fresh_backup(tmp_path):
+    # The copy is kept for a while after startup, so a new update has to
+    # clear it even when it is fresh.
     target = tmp_path / "LamzuBattery.exe"
     target.write_bytes(b"current")
     _, backup = updater.update_paths(target)
     backup.write_bytes(b"old")
 
-    assert not updater.prepare_update_target(target, timeout=0.05)
-    assert backup.exists()
+    assert updater.prepare_update_target(target, timeout=0.1)
+    assert not backup.exists()
+
+
+def test_rollback_executable_swaps_the_files_back(tmp_path):
+    target = tmp_path / "LamzuBattery.exe"
+    new_path, backup = updater.update_paths(target)
+    target.write_bytes(b"new")
+    backup.write_bytes(b"old")
+
+    assert updater.rollback_executable(target, backup, new_path)
+    assert target.read_bytes() == b"old"
+    assert new_path.read_bytes() == b"new"
+    assert not backup.exists()
+
+
+def test_rollback_executable_restores_a_missing_target(tmp_path):
+    # A failed replacement can leave no exe at all: the backup is then the
+    # only copy of the previous version and has to be restored directly.
+    target = tmp_path / "LamzuBattery.exe"
+    new_path, backup = updater.update_paths(target)
+    backup.write_bytes(b"old")
+    new_path.write_bytes(b"new")
+
+    assert updater.rollback_executable(target, backup, new_path)
+    assert target.read_bytes() == b"old"
+    assert not backup.exists()
+    assert new_path.read_bytes() == b"new"
+
+
+def test_rollback_executable_reports_a_missing_backup(tmp_path):
+    target = tmp_path / "LamzuBattery.exe"
+    new_path, backup = updater.update_paths(target)
+    target.write_bytes(b"new")
+
+    assert not updater.rollback_executable(target, backup, new_path)
+    assert target.read_bytes() == b"new"
 
 
 def test_cleanup_backup_keeps_download(tmp_path):
@@ -342,3 +406,60 @@ def test_cleanup_backup_keeps_download(tmp_path):
     assert not backup_path.exists()
     assert new_path.read_bytes() == b"new"
     assert target.read_bytes() == b"current"
+
+
+def test_replace_executable_marks_the_backup_as_new(tmp_path):
+    target = tmp_path / "LamzuBattery.exe"
+    new_path = tmp_path / "LamzuBattery.new.exe"
+    target.write_bytes(b"old")
+    new_path.write_bytes(b"new")
+    week_ago = time.time() - 7 * 24 * 60 * 60
+    os.utime(target, (week_ago, week_ago))
+
+    backup = updater.replace_executable(target, new_path)
+
+    # The rename keeps the source mtime; the copy must look fresh instead.
+    assert abs(time.time() - backup.stat().st_mtime) < 60
+
+
+def test_ensure_update_target_rejects_a_read_only_exe(tmp_path):
+    target = tmp_path / "LamzuBattery.exe"
+    target.write_bytes(b"current")
+    os.chmod(target, stat.S_IREAD)
+    try:
+        with pytest.raises(updater.UpdateError, match="read-only"):
+            updater.ensure_update_target(target)
+    finally:
+        os.chmod(target, stat.S_IWRITE)
+
+
+def test_download_update_times_out(monkeypatch, tmp_path):
+    data = b"MZ" + b"payload"
+    payload = _release_payload(data=data)
+    monkeypatch.setattr(
+        updater,
+        "_open_url",
+        lambda url, timeout, accept: FakeResponse(
+            json.dumps(payload).encode("utf-8"), url
+        ),
+    )
+    info = updater.check_for_update("1.2.1")
+    monkeypatch.setattr(
+        updater,
+        "_open_url",
+        lambda url, timeout, accept: FakeResponse(data, url),
+    )
+
+    clock = [0.0]
+    monkeypatch.setattr(
+        updater.time,
+        "monotonic",
+        lambda: clock.__setitem__(0, clock[0] + 10 ** 6) or clock[0],
+    )
+
+    destination = tmp_path / "LamzuBattery.new.exe"
+    with pytest.raises(updater.UpdateError, match="timed out"):
+        updater.download_update(info, destination)
+
+    assert not destination.exists()
+    assert not (tmp_path / "LamzuBattery.new.exe.part").exists()

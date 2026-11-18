@@ -33,6 +33,7 @@ USER_AGENT = "LamzuBattery"
 MAX_UPDATE_BYTES = 200 * 1024 * 1024
 MAX_JSON_BYTES = 1024 * 1024
 CHUNK_SIZE = 256 * 1024
+MAX_DOWNLOAD_SECONDS = 15 * 60
 UPDATE_FILE_MUTEX = "Local\\LamzuBatteryUpdateFiles"
 STALE_BACKUP_SECONDS = 24 * 60 * 60
 REPLACE_RETRY_DELAYS = (0.1, 0.25, 0.5, 1.0)
@@ -93,11 +94,9 @@ def _update_file_lock(timeout: float = 30.0) -> Iterator[None]:
 @dataclass(frozen=True)
 class UpdateInfo:
     version: str
-    tag: str
     asset_url: str
     asset_size: int
     digest: str
-    page_url: str = ""
 
 
 def parse_version(value: str) -> tuple[int, ...]:
@@ -118,6 +117,23 @@ def is_newer(candidate: str, current: str) -> bool:
     left = candidate_parts + (0,) * (width - len(candidate_parts))
     right = current_parts + (0,) * (width - len(current_parts))
     return left > right
+
+
+def same_version(left: str, right: str) -> bool:
+    """Return True when both strings name the same dotted version.
+
+    Tags and ``APP_VERSION`` may differ in form (``v1.6``, ``1.6.0``,
+    ``1.6.0.0``) while describing the same release, so the values are
+    compared numerically with zero padding instead of as strings.
+    """
+    left_parts = parse_version(left)
+    right_parts = parse_version(right)
+    if not left_parts or not right_parts:
+        return False
+    width = max(len(left_parts), len(right_parts))
+    return (left_parts + (0,) * (width - len(left_parts))) == (
+        right_parts + (0,) * (width - len(right_parts))
+    )
 
 
 def executable_path() -> Optional[Path]:
@@ -170,6 +186,10 @@ def ensure_update_target(target: Path, required_bytes: int = 0) -> None:
     target = Path(target)
     if not target.is_file():
         raise UpdateError(f"current exe not found: {target}")
+    if not os.access(target, os.W_OK):
+        # Windows reports the read-only attribute here; replacing such a file
+        # fails only after the whole update has been downloaded.
+        raise UpdateError(f"the current exe is read-only: {target}")
 
     parent = target.parent
     probe = parent / f".{target.stem}.write-test-{os.getpid()}"
@@ -219,8 +239,9 @@ def _is_trusted_asset_url(url: str) -> bool:
     host = (parsed.hostname or "").lower()
     if host not in {"github.com", "www.github.com"}:
         return False
-    return parsed.path.startswith(
-        "/lavandiI/lamzu-battery/releases/download/"
+    # Owner and repository names are case-insensitive on GitHub.
+    return parsed.path.lower().startswith(
+        "/lavandii/lamzu-battery/releases/download/"
     )
 
 
@@ -307,11 +328,9 @@ def check_for_update(
     version = tag[1:] if tag.lower().startswith("v") else tag
     return UpdateInfo(
         version=version,
-        tag=tag,
         asset_url=asset_url,
         asset_size=asset_size,
         digest=digest,
-        page_url=str(payload.get("html_url") or ""),
     )
 
 
@@ -332,6 +351,7 @@ def download_update(
 
     hasher = hashlib.sha256()
     total = 0
+    deadline = time.monotonic() + MAX_DOWNLOAD_SECONDS
     try:
         response = _open_url(
             info.asset_url, timeout, "application/octet-stream"
@@ -347,6 +367,11 @@ def download_update(
                     log.debug("download progress callback failed", exc_info=True)
             with part.open("wb") as handle:
                 while True:
+                    # ``timeout`` bounds a single socket read only, so a
+                    # server that trickles data could hold the update lock
+                    # forever; the whole download gets its own deadline.
+                    if time.monotonic() > deadline:
+                        raise UpdateError("download timed out")
                     chunk = response.read(CHUNK_SIZE)
                     if not chunk:
                         break
@@ -470,6 +495,12 @@ def replace_executable(
             _replace_with_retries(target, backup_path)
         except OSError as exc:
             raise UpdateError(f"could not move current exe: {exc}") from exc
+        try:
+            # Renaming keeps the mtime of the executable, which would make
+            # the fresh rollback copy look days old to the staleness rules.
+            os.utime(backup_path, None)
+        except OSError:
+            log.debug("could not refresh the backup timestamp", exc_info=True)
 
         try:
             _replace_with_retries(new_path, target)
@@ -487,15 +518,21 @@ def rollback_executable(
     backup_path: Path,
     new_path: Path,
 ) -> bool:
-    """Restore the old exe when the new process could not be started."""
+    """Restore the old exe when the new process could not be started.
+
+    A failed replacement can leave the installation without
+    ``LamzuBattery.exe``; the backup is then the only copy of the previous
+    version, so it is restored directly instead of requiring a target file.
+    """
     target = Path(target)
     backup_path = Path(backup_path)
     new_path = Path(new_path)
-    if not target.is_file() or not backup_path.is_file():
+    if not backup_path.is_file():
         return False
     try:
         with _update_file_lock():
-            _replace_with_retries(target, new_path)
+            if target.is_file():
+                _replace_with_retries(target, new_path)
             _replace_with_retries(backup_path, target)
         return True
     except (OSError, UpdateError):
@@ -581,9 +618,15 @@ def cleanup_stale_backup(
 
 
 def prepare_update_target(target: Path, timeout: float = 10.0) -> bool:
-    """Wait for a normal backup cleanup and remove one that is clearly stale."""
+    """Drop the rollback copy of the previous update before installing.
+
+    A leftover copy is kept after startup on purpose, so a defect that shows
+    up later can still be rolled back by hand. It is not needed any more when
+    a new update starts: the process asking for it is running from the
+    current version already.
+    """
     _, backup_path = update_paths(target)
-    cleanup_stale_backup(target)
+    _remove_with_retries(backup_path, 5, 0.2, use_lock=True)
     deadline = time.monotonic() + timeout
     while backup_path.exists() and time.monotonic() < deadline:
         time.sleep(0.25)

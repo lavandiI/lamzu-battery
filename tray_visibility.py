@@ -89,7 +89,9 @@ def _entries_for(exe_path: object) -> list[TrayEntry]:
                 except OSError:
                     continue
     except OSError:
-        return []
+        # Keep what was already found: one unreadable key must not hide the
+        # entries that were read successfully.
+        log.debug("could not enumerate all tray entries", exc_info=True)
     return entries
 
 
@@ -147,6 +149,7 @@ def promote(
     if not is_supported():
         return UNSUPPORTED
 
+    failed = False
     for delay in (0.0, *retry_delays):
         if _wait(delay, None):
             return STOPPED
@@ -157,10 +160,13 @@ def promote(
             for entry in entries:
                 _set_promoted(entry.key_name)
         except OSError:
+            # Explorer can hold the key for a moment; try again instead of
+            # giving up after the first failure.
             log.debug("could not promote tray icon", exc_info=True)
-            return ERROR
+            failed = True
+            continue
         return PROMOTED
-    return NOT_FOUND
+    return ERROR if failed else NOT_FOUND
 
 
 def open_taskbar_settings() -> None:

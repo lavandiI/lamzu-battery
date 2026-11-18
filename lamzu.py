@@ -148,16 +148,6 @@ class BatteryReading:
         return self.state == 2 or (self.state == 1 and self.percent >= 100)
 
     @property
-    def state_text(self) -> str:
-        if self.full:
-            return "заряжена"
-        return {
-            0: "разряд",
-            1: "заряжается",
-            2: "заряжена",
-        }.get(self.state, f"состояние {self.state}")
-
-    @property
     def protocol_text(self) -> str:
         return {"compx": "Compx", "aurora": "Aurora"}.get(
             self.protocol, self.protocol or "unknown"
@@ -181,15 +171,15 @@ class DeviceInfo:
         return f"{self.vendor_id:04X}:{self.product_id:04X}"
 
 
-def _as_int(value) -> int:
+def as_int(value) -> int:
     try:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
 
 
-def _is_lamzu(info: dict) -> bool:
-    if _as_int(info.get("vendor_id")) in LAMZU_VENDOR_IDS:
+def is_lamzu(info: dict) -> bool:
+    if as_int(info.get("vendor_id")) in LAMZU_VENDOR_IDS:
         return True
     text = " ".join(
         str(info.get(key) or "")
@@ -213,14 +203,17 @@ def _model_from_product(product: str) -> Optional[str]:
     name = product.strip()
     if name.upper().startswith("LAMZU"):
         name = name[5:].strip(" -_")
-    if not name or _is_receiver_name(name):
-        return None
+    # Срезать хвост «... Mouse» нужно до проверки на приёмник: у мыши в
+    # product string часто стоит «LAMZU Maya X Wireless Mouse», и слово
+    # wireless не делает её донглом.
     lowered = name.lower()
-    for suffix in (" gaming mouse", " wireless mouse", " mouse"):
+    for suffix in (" gaming mouse", " wireless mouse", " wireless", " mouse"):
         if lowered.endswith(suffix):
             name = name[: -len(suffix)].strip()
             break
-    return name.title() if name else None
+    if not name or _is_receiver_name(name):
+        return None
+    return name.title()
 
 
 def _model_for(vendor_id: int, product_id: int, product: str) -> Optional[str]:
@@ -242,12 +235,12 @@ def discover_devices() -> list[DeviceInfo]:
     candidates: list[DeviceInfo] = []
     seen: set[bytes] = set()
     for info in infos:
-        if not _is_lamzu(info):
+        if not is_lamzu(info):
             continue
         path = info.get("path")
         if not path or path in seen:
             continue
-        usage_page = _as_int(info.get("usage_page"))
+        usage_page = as_int(info.get("usage_page"))
         if usage_page == USAGE_PAGE_COMPX:
             protocol = "compx"
         elif usage_page == USAGE_PAGE_AURORA:
@@ -256,8 +249,8 @@ def discover_devices() -> list[DeviceInfo]:
             continue
 
         seen.add(path)
-        vendor_id = _as_int(info.get("vendor_id"))
-        product_id = _as_int(info.get("product_id"))
+        vendor_id = as_int(info.get("vendor_id"))
+        product_id = as_int(info.get("product_id"))
         product = str(info.get("product_string") or "")
         interface = info.get("interface_number")
         if interface is not None:
@@ -291,16 +284,28 @@ def discover_devices() -> list[DeviceInfo]:
             or item.interface == AURORA_INTERFACE
         ]
 
-    def rank(item: DeviceInfo) -> tuple[int, int, int]:
-        wired = 0 if (item.vendor_id, item.product_id) in _WIRED_IDS else 1
-        if _is_receiver_name(item.product):
-            wired += 2
-        protocol = 0 if item.protocol == "compx" else 1
-        interface = item.interface if item.interface is not None else 99
-        return (wired, protocol, interface)
-
-    candidates.sort(key=rank)
+    candidates.sort(key=_rank)
     return candidates
+
+
+def _rank(item: DeviceInfo) -> tuple[int, int, int]:
+    """Порядок опроса: проводной интерфейс, затем донгл, затем остальное.
+
+    Имя продукта не решает, является ли интерфейс донглом: у кабеля оно
+    тоже может содержать «Wireless Mouse». Признак донгла применяется
+    только к PID, которых нет в ``_WIRED_IDS``.
+    """
+    is_wired = (item.vendor_id, item.product_id) in _WIRED_IDS
+    is_receiver = not is_wired and _is_receiver_name(item.product)
+    if is_wired:
+        position = 0
+    elif is_receiver:
+        position = 2
+    else:
+        position = 1
+    protocol = 0 if item.protocol == "compx" else 1
+    interface = item.interface if item.interface is not None else 99
+    return (position, protocol, interface)
 
 
 def present_product_ids() -> frozenset[tuple[int, int]]:
@@ -310,9 +315,9 @@ def present_product_ids() -> frozenset[tuple[int, int]]:
     except Exception:
         return frozenset()
     return frozenset(
-        (_as_int(info.get("vendor_id")), _as_int(info.get("product_id")))
+        (as_int(info.get("vendor_id")), as_int(info.get("product_id")))
         for info in infos
-        if _is_lamzu(info)
+        if is_lamzu(info)
     )
 
 
@@ -326,18 +331,43 @@ def _compx_voltage(data: list[int], offset: int) -> Optional[int]:
     return voltage_mv
 
 
+def _compx_padding_ok(data: list[int], start: int, stop: int) -> bool:
+    """True when the unused header bytes of a Compx frame are zero.
+
+    A real response from a 1K dongle looks like
+    ``08 04 00 00 00 02 5f 00 10 05 00 00 00 00 00 00 d3``. Only the header
+    padding is checked: the tail bytes are not documented and may carry data
+    on other models or while charging, while the checksum already covers the
+    whole frame.
+    """
+    return not any(data[start:stop])
+
+
 def _parse_compx(data: list[int]) -> Optional[BatteryReading]:
-    """Разобрать ответ Compx, принимая оба варианта (с report ID и без).
+    """Разобрать ответ Compx (с report ID или без него).
 
     Байт 6 — грубый уровень с шагом 5 %, байты 8-9 — напряжение в мВ.
     Для точного процента используется напряжение и кривая официального ПО;
     если напряжение недостоверно, остаётся грубый уровень.
+
+    Принимаются три раскладки: 17 байт с report ID и контрольной суммой,
+    16 байт с report ID без суммы (старая ревизия) и 16 байт без report ID
+    (сборка hidapi, отбрасывающая ID). Во всех случаях проверяются нулевые
+    байты заголовка и точная длина, поэтому посторонний отчёт не может
+    сойти за заряд.
     """
     raw_level: int
     state: int
     voltage_mv: Optional[int]
 
-    if len(data) >= 17 and data[0] == COMPX_REPORT_ID and data[1] == COMPX_BATTERY_COMMAND:
+    if (
+        len(data) >= 17
+        and data[0] == COMPX_REPORT_ID
+        and data[1] == COMPX_BATTERY_COMMAND
+    ):
+        if not _compx_padding_ok(data, 2, 5):
+            log.debug("unexpected Compx frame: %s", data)
+            return None
         raw_level, state, checksum = data[6], data[7], data[16]
         expected = (0x55 - sum(data[:16])) & 0xFF
         if checksum != expected:
@@ -346,12 +376,33 @@ def _parse_compx(data: list[int]) -> Optional[BatteryReading]:
             )
             return None
         voltage_mv = _compx_voltage(data, 8)
-    elif len(data) >= 16 and data[0] == COMPX_REPORT_ID and data[1] == COMPX_BATTERY_COMMAND:
-        # Ответ без контрольной суммы — встречается у некоторых ревизий.
+    elif (
+        len(data) == 16
+        and data[0] == COMPX_REPORT_ID
+        and data[1] == COMPX_BATTERY_COMMAND
+    ):
+        # Та же раскладка без байта контрольной суммы.
+        if not _compx_padding_ok(data, 2, 5):
+            log.debug("unexpected Compx frame: %s", data)
+            return None
         raw_level, state = data[6], data[7]
         voltage_mv = _compx_voltage(data, 8)
-    elif len(data) >= 7 and data[0] == COMPX_BATTERY_COMMAND:
-        # Некоторые сборки hidapi/драйвера отдают ответ без report ID.
+    elif len(data) == 16 and data[0] == COMPX_BATTERY_COMMAND:
+        # Ответ без report ID: все поля сдвинуты на байт, контрольная сумма
+        # учитывает отсутствующий ID.
+        if not _compx_padding_ok(data, 1, 4):
+            log.debug("unexpected Compx frame: %s", data)
+            return None
+        checksum = data[15]
+        expected = (0x55 - COMPX_REPORT_ID - sum(data[:15])) & 0xFF
+        if checksum != expected:
+            log.debug(
+                "bad Compx checksum without report id: "
+                "got 0x%02x, expected 0x%02x",
+                checksum,
+                expected,
+            )
+            return None
         raw_level, state = data[5], data[6]
         voltage_mv = _compx_voltage(data, 7)
     else:
@@ -523,6 +574,66 @@ def _read_aurora(path: bytes, timeout: float) -> Optional[BatteryReading]:
         except Exception:
             pass
     return None
+
+
+def probe_reports(device: DeviceInfo, timeout: float = 0.6) -> list[bytes]:
+    """Send the read-only battery request and collect the raw replies.
+
+    ``diagnose.py --raw`` prints these bytes: a device may answer with a frame
+    the parser rejects, and that frame is exactly what a bug report needs.
+    """
+    reports: list[bytes] = []
+    handle = hid.device()
+    try:
+        handle.open_path(device.path)
+        if device.protocol == "compx":
+            try:
+                handle.write(_compx_request())
+            except Exception as exc:
+                log.debug("probe write failed on %r: %s", device.path, exc)
+                return reports
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                data = handle.read(64, 40)
+                if data:
+                    reports.append(bytes(data))
+        else:
+            for new_protocol in (True, False):
+                request = _aurora_request(new_protocol)
+                sent = False
+                try:
+                    sent = handle.send_feature_report(request) >= 0
+                except Exception as exc:
+                    log.debug("probe feature send failed: %s", exc)
+                if not sent:
+                    try:
+                        sent = handle.write(request) > 0
+                    except Exception as exc:
+                        log.debug("probe write failed: %s", exc)
+                if not sent:
+                    continue
+                deadline = time.monotonic() + timeout / 2
+                time.sleep(0.02)
+                while time.monotonic() < deadline:
+                    try:
+                        feature = handle.get_feature_report(
+                            AURORA_REPORT_ID, 65
+                        )
+                    except Exception:
+                        feature = None
+                    if feature:
+                        reports.append(bytes(feature))
+                    data = handle.read(65, 30)
+                    if data:
+                        reports.append(bytes(data))
+    except Exception as exc:
+        log.debug("probe failed on %r: %s", device.path, exc)
+    finally:
+        try:
+            handle.close()
+        except Exception:
+            pass
+    return reports
 
 
 def read_battery(timeout: float = 0.5) -> Optional[BatteryReading]:

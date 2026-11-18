@@ -59,23 +59,34 @@ _STRINGS = {
         "update.checking": "Checking for updates...",
         "update.busy": "An update check is already running.",
         "update.latest": "You have the latest version ({version}).",
-        "update.available": "Version {version} is available. Use Install {version} in the tray menu.",
+        "update.available": (
+            "Version {version} is available. "
+            "Use Install {version} in the tray menu."
+        ),
         "update.installing": "Version {version} installed. Restarting...",
         "update.failed": "Could not update. Download the new version from GitHub.",
-        "update.failed_reason": "Could not update: {reason}. Open the release page from the tray menu.",
+        "update.failed_reason": (
+            "Could not update: {reason}. "
+            "Open the release page from the tray menu."
+        ),
         "update.downloading": "Downloading update... {percent}%",
         "update.downloading_unknown": "Downloading update...",
         "update.source_mode": "Auto-update works only in the built LamzuBattery.exe.",
         "cli.debug_help": "verbose log",
         "cli.lang_help": "interface language (default: system)",
+        "cli.raw_help": "also print the raw HID reports",
+        "cli.version_help": "print the version and exit",
         "diagnose.version": "Version: {version}",
         "diagnose.executable": "Executable: {path}",
         "diagnose.header": "LAMZU HID interfaces:",
+        "diagnose.hid_error": "HID enumeration failed: {error}",
         "diagnose.not_found": (
             "  not found — check that the dongle or cable is connected"
         ),
         "diagnose.control": "  <-- control: {protocol}, {model}",
         "diagnose.model_unknown": "model not detected",
+        "diagnose.raw_header": "Raw reports:",
+        "diagnose.raw_none": "  no report received",
         "diagnose.no_response": (
             "Battery: no response. Move the mouse and try again."
         ),
@@ -139,14 +150,19 @@ _STRINGS = {
         "update.source_mode": "Автообновление работает только в собранном LamzuBattery.exe.",
         "cli.debug_help": "подробный журнал",
         "cli.lang_help": "язык интерфейса (по умолчанию — системный)",
+        "cli.raw_help": "дополнительно печатать сырые HID-отчёты",
+        "cli.version_help": "показать версию и выйти",
         "diagnose.version": "Версия: {version}",
         "diagnose.executable": "Файл: {path}",
         "diagnose.header": "LAMZU HID-интерфейсы:",
+        "diagnose.hid_error": "Не удалось перечислить HID-устройства: {error}",
         "diagnose.not_found": (
             "  не найдено — проверьте, что донгл или кабель подключён"
         ),
         "diagnose.control": "  <-- управляющий: {protocol}, {model}",
         "diagnose.model_unknown": "модель не определена",
+        "diagnose.raw_header": "Сырые отчёты:",
+        "diagnose.raw_none": "  отчётов нет",
         "diagnose.no_response": (
             "Заряд: нет ответа. Пошевелите мышь и запустите ещё раз."
         ),

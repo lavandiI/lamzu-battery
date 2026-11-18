@@ -14,6 +14,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import webbrowser
@@ -23,14 +24,14 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
-import i18n
 import pystray
+from PIL import Image, ImageDraw, ImageFont
+
+import i18n
 import tray_visibility
 import updater
-from PIL import Image, ImageDraw, ImageFont
-from version import APP_VERSION
-
 from lamzu import BatteryReading, present_product_ids, read_battery
+from version import APP_VERSION
 
 APP_NAME = "LAMZU Battery"
 APP_ID = "LamzuBattery"
@@ -44,6 +45,10 @@ UPDATE_CHECK_INTERVAL = 6 * 60 * 60
 UPDATE_RETRY_DELAYS = (60, 300, 900, 3600, 21600)
 HEALTH_DELAY = 5.0
 UPDATE_READY_TIMEOUT = 30.0
+# How long the rollback copy is kept after a successful start. A defect that
+# shows up minutes later can still be rolled back by hand; the copy is also
+# removed before the next update in updater.prepare_update_target().
+BACKUP_GRACE_PERIOD = 60 * 60
 
 if getattr(sys, "frozen", False):
     # PyInstaller: файлы рядом с exe, а не во временной папке _MEIPASS.
@@ -52,23 +57,48 @@ else:
     BASE_DIR = Path(__file__).resolve().parent
 
 
+_DATA_DIR_FALLBACK: Optional[Path] = None
+
+
+def _is_writable_dir(path: Path) -> bool:
+    """Create the folder and prove it is writable with a unique probe file."""
+    probe = path / f".write_test-{os.getpid()}"
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe.write_text("ok", encoding="ascii")
+    except OSError:
+        return False
+    try:
+        # A unique name keeps two instances starting at the same time from
+        # deleting each other's probe and wrongly falling back.
+        probe.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return True
+
+
 def _pick_data_dir() -> Path:
     """Портативная папка data рядом с приложением, иначе LocalAppData.
 
     Важно: Python из Microsoft Store виртуализирует запись в AppData,
     поэтому основной вариант — обычная папка рядом с программой.
     """
+    global _DATA_DIR_FALLBACK
     preferred = BASE_DIR / "data"
-    try:
-        preferred.mkdir(parents=True, exist_ok=True)
-        probe = preferred / ".write_test"
-        probe.write_text("ok", encoding="ascii")
-        probe.unlink()
+    if _is_writable_dir(preferred):
         return preferred
-    except OSError:
-        fallback = Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_ID
-        fallback.mkdir(parents=True, exist_ok=True)
-        return fallback
+    local = os.environ.get("LOCALAPPDATA") or Path.home()
+    for candidate in (
+        Path(local) / APP_ID,
+        Path(tempfile.gettempdir()) / APP_ID,
+    ):
+        if _is_writable_dir(candidate):
+            _DATA_DIR_FALLBACK = preferred
+            return candidate
+    # Nothing is writable: keep the portable path so the failure is visible
+    # in one place instead of hiding behind a different directory.
+    _DATA_DIR_FALLBACK = preferred
+    return preferred
 
 
 DATA_DIR = _pick_data_dir()
@@ -80,21 +110,56 @@ CRASH_FILE = DATA_DIR / "crash.log"
 DEFAULT_UPDATE_MODE = "auto"
 UPDATE_MODES = ("auto", "notify")
 
-COLOR_NORMAL = (0, 122, 255, 255)       # синий
-COLOR_LOW = (255, 59, 48, 255)          # яркий красный
-COLOR_CHARGE = (0, 140, 70, 255)        # тёмно-зелёный
-COLOR_STALE = (184, 212, 255, 255)      # светло-голубой вместо тусклого серого
+# Цифры на тёмной панели задач — яркие, на светлой — заметно темнее:
+# светло-голубой «нет данных» на #F3F3F3 даёт контраст 1.36:1, то есть
+# практически не виден. Для светлой темы все цвета держат >= 5:1.
+PALETTE_DARK = {
+    "normal": (0, 122, 255, 255),       # синий
+    "low": (255, 59, 48, 255),          # яркий красный
+    "charge": (0, 140, 70, 255),        # тёмно-зелёный
+    "stale": (184, 212, 255, 255),      # светло-голубой вместо серого
+}
+PALETTE_LIGHT = {
+    "normal": (0, 88, 200, 255),        # 5.86:1 на #F3F3F3
+    "low": (196, 39, 30, 255),          # 5.18:1
+    "charge": (0, 107, 52, 255),        # 6.00:1
+    "stale": (44, 95, 168, 255),        # 5.72:1
+}
+PERSONALIZE_KEY = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+LIGHT_THEME_VALUE = "SystemUsesLightTheme"
+
+
+def palette(light: bool = False) -> dict[str, tuple[int, int, int, int]]:
+    """Return the tray palette for the current taskbar theme."""
+    return PALETTE_LIGHT if light else PALETTE_DARK
+
+
+def taskbar_uses_light_theme() -> bool:
+    """True when Windows draws the taskbar light.
+
+    Windows 10 has no such value for the taskbar (it is always dark), so a
+    missing key means the dark palette, which is also the old behaviour.
+    """
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, PERSONALIZE_KEY
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, LIGHT_THEME_VALUE)
+        return int(value) == 1
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 def battery_color(
-    percent: int, charging: bool, full: bool
+    percent: int, charging: bool, full: bool, light: bool = False
 ) -> tuple[int, int, int, int]:
     """Цвет цифр: зелёный при зарядке, красный ниже 30%, иначе синий."""
+    colors = palette(light)
     if charging or full:
-        return COLOR_CHARGE
+        return colors["charge"]
     if percent < 30:
-        return COLOR_LOW
-    return COLOR_NORMAL
+        return colors["low"]
+    return colors["normal"]
 
 
 # Обычное обновление — раз в 5 минут. Во время зарядки чаще, чтобы
@@ -105,6 +170,14 @@ POLL_INTERVAL_CHARGING = 60
 POLL_INTERVAL_OFFLINE = 20
 
 log = logging.getLogger("lamzu_tray")
+
+
+def _as_int(value) -> int:
+    """Best-effort int conversion for a value read from a JSON file."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _next_update_delay(ok: bool, failures: int) -> tuple[int, float]:
@@ -120,7 +193,7 @@ def _next_update_delay(ok: bool, failures: int) -> tuple[int, float]:
 def _load_settings() -> dict:
     """Read settings, keeping unknown keys for forward compatibility."""
     try:
-        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError, TypeError, AttributeError):
         data = None
     if not isinstance(data, dict):
@@ -145,9 +218,14 @@ def _save_settings(**changes: object) -> None:
     settings["update_mode"] = _normalize_update_mode(
         settings.get("update_mode")
     )
+    tmp: Optional[Path] = None
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = SETTINGS_FILE.with_suffix(".tmp")
+        # A unique name: two instances (autostart plus a manual start, or the
+        # update hand-off) must not publish a mixed file.
+        tmp = SETTINGS_FILE.with_name(
+            f"{SETTINGS_FILE.name}.{os.getpid()}.tmp"
+        )
         tmp.write_text(
             json.dumps(settings, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -155,6 +233,11 @@ def _save_settings(**changes: object) -> None:
         os.replace(tmp, SETTINGS_FILE)
     except OSError:
         log.debug("could not save settings", exc_info=True)
+        if tmp is not None:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _load_language() -> str:
@@ -173,24 +256,74 @@ def _save_language(language: str) -> None:
 # Общие помощники
 # ---------------------------------------------------------------------------
 
-def setup_logging(debug: bool = False) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+def _file_log_handler(path: Path) -> RotatingFileHandler:
     handler = RotatingFileHandler(
-        LOG_FILE, maxBytes=256 * 1024, backupCount=1, encoding="utf-8"
+        path, maxBytes=256 * 1024, backupCount=1, encoding="utf-8"
     )
     handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S")
+        logging.Formatter(
+            "%(asctime)s %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S"
+        )
     )
+    return handler
+
+
+def _has_log_handler(path: Path) -> bool:
+    target = Path(path)
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, RotatingFileHandler):
+            if Path(handler.baseFilename) == target:
+                return True
+    return False
+
+
+def setup_logging(debug: bool = False) -> bool:
+    """Configure file logging; this never raises.
+
+    A read-only data folder must not kill a windowed application before the
+    crash dialog can be installed, so the log moves to ``%TEMP%`` and, if
+    that fails too, logging is simply disabled. Returns True when a log file
+    is active.
+    """
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if debug else logging.INFO)
-    root.addHandler(handler)
+    if _has_log_handler(LOG_FILE):
+        return True
+
+    handler: Optional[RotatingFileHandler] = None
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        handler = _file_log_handler(LOG_FILE)
+    except OSError:
+        try:
+            handler = _file_log_handler(
+                Path(tempfile.gettempdir()) / f"{APP_ID}.log"
+            )
+        except OSError:
+            handler = None
+    if handler is not None:
+        root.addHandler(handler)
+
     # Не засорять журнал внутренними сообщениями библиотек.
     for noisy in ("PIL", "pystray", "hid"):
         logging.getLogger(noisy).setLevel(logging.INFO)
     if debug and sys.stderr is not None:
         console = logging.StreamHandler()
-        console.setFormatter(handler.formatter)
+        console.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)s %(message)s",
+                "%Y-%m-%d %H:%M:%S",
+            )
+        )
         root.addHandler(console)
+
+    if handler is None:
+        return False
+    if Path(handler.baseFilename) != Path(LOG_FILE):
+        log.warning(
+            "could not write %s, logging to %s", LOG_FILE, handler.baseFilename
+        )
+    return True
 
 
 _FAULT_FILE = None
@@ -241,10 +374,19 @@ def install_exception_logging() -> None:
                 CRASH_FILE.unlink()
         except OSError:
             pass
+        fault_file = None
         try:
-            _FAULT_FILE = open(CRASH_FILE, "a", encoding="utf-8")
-            faulthandler.enable(file=_FAULT_FILE, all_threads=True)
+            fault_file = open(CRASH_FILE, "a", encoding="utf-8")
+            faulthandler.enable(file=fault_file, all_threads=True)
+            _FAULT_FILE = fault_file
         except (OSError, RuntimeError, ValueError):
+            # faulthandler may refuse the file after it was opened; close it
+            # so a failed start does not leak the descriptor.
+            if fault_file is not None:
+                try:
+                    fault_file.close()
+                except OSError:
+                    pass
             _FAULT_FILE = None
     sys.excepthook = _unhandled_exception
     threading.excepthook = _unhandled_thread
@@ -288,6 +430,46 @@ def _close_mutex(handle) -> None:
     kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
     kernel32.CloseHandle.restype = ctypes.c_bool
     kernel32.CloseHandle(handle)
+
+
+def _stop_process_tree(process, timeout: float = 10.0) -> bool:
+    """Stop the updated process together with its PyInstaller child.
+
+    In onefile mode ``Popen`` returns the bootloader, which runs the real
+    application as a child process. ``terminate()`` would kill only the
+    bootloader, leaving the child alive and holding the tray mutex, so the
+    whole tree is terminated with ``taskkill /T``.
+    """
+    if process.poll() is not None:
+        return True
+
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=CREATE_NO_WINDOW,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        log.debug("taskkill failed for pid %s", process.pid, exc_info=True)
+
+    try:
+        process.wait(timeout=5.0)
+        return True
+    except subprocess.TimeoutExpired:
+        pass
+
+    # Last resort: kill the bootloader. The caller then checks the tray
+    # mutex, which is the only reliable sign that the child is gone too.
+    try:
+        process.kill()
+        process.wait(timeout=5.0)
+        return True
+    except (OSError, subprocess.TimeoutExpired):
+        log.error("could not stop the updated instance (pid %s)", process.pid)
+        return False
 
 
 @lru_cache(maxsize=64)
@@ -340,18 +522,28 @@ def _fit_icon_font(
 _RENDER_LOCK = threading.Lock()
 
 
+def _use_condensed(text: str) -> bool:
+    """Narrow font for multi-digit values so the digits stay large.
+
+    A two-digit percentage in Segoe UI Bold is limited by the icon width and
+    fills only about 62% of its height; Bahnschrift Bold Condensed fits the
+    same width at roughly 88% of the height.
+    """
+    return text.isdigit() and len(text) >= 2
+
+
 def render_icon(text: str, color: tuple[int, int, int, int], size: int = 64) -> Image.Image:
     """Иконка трея: максимально крупные цифры без обводки.
 
-    Двузначные проценты набираются обычным Segoe UI Bold, трёхзначные —
-    узким Bahnschrift Bold Condensed: так «100» тоже занимает почти всю
-    высоту иконки, не превращаясь в нечитаемую мелочь.
+    Проценты из двух и трёх цифр набираются узким Bahnschrift Bold
+    Condensed, одиночная цифра — обычным Segoe UI Bold: так цифры занимают
+    почти всю высоту иконки и остаются читаемыми в трее.
     """
     with _RENDER_LOCK:
         image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
         digits = text.isdigit()
-        condensed = len(text) >= 3 and digits
+        condensed = _use_condensed(text)
         fill_ratio = 0.98 if digits else 0.82
 
         font, bbox = _fit_icon_font(draw, text, size, condensed, fill_ratio)
@@ -377,11 +569,20 @@ def autostart_command() -> str:
     return f'"{interpreter}" "{Path(__file__).resolve()}"'
 
 
+def _same_autostart_command(left: str, right: str) -> bool:
+    """Compare autostart commands the way Windows resolves paths.
+
+    A value written by an older build or with different capitalization still
+    points at this executable, so the menu must not show it as disabled.
+    """
+    return os.path.normcase(left.strip()) == os.path.normcase(right.strip())
+
+
 def autostart_enabled() -> bool:
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
             value, _ = winreg.QueryValueEx(key, RUN_VALUE)
-        return str(value) == autostart_command()
+        return _same_autostart_command(str(value), autostart_command())
     except OSError:
         return False
 
@@ -419,7 +620,7 @@ def _migrate_legacy_autostart() -> None:
             winreg.DeleteValue(key, LEGACY_RUN_VALUE)
             log.info("migrated autostart from %s", LEGACY_RUN_VALUE)
     except OSError:
-        pass
+        log.debug("could not migrate the legacy autostart entry", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +632,7 @@ class BatteryTray:
         self._last: Optional[BatteryReading] = None
         self._last_ok: float = 0.0
         self._online = False
+        self._state_lock = threading.Lock()
         self._stop = threading.Event()
         self._poll_lock = threading.Lock()
         self._icon_lock = threading.Lock()
@@ -450,13 +652,15 @@ class BatteryTray:
         self._last_update_check_at = 0.0
         self._last_update_error: Optional[str] = None
         self._progress_percent: Optional[int] = None
+        self._menu_signature: Optional[tuple[str, str]] = None
+        self._light_theme = taskbar_uses_light_theme()
         settings = _load_settings()
         self._auto_update = (
             _normalize_update_mode(settings.get("update_mode")) == "auto"
         )
         self._icon = pystray.Icon(
             APP_ID,
-            render_icon("?", COLOR_STALE),
+            render_icon("?", palette(self._light_theme)["stale"]),
             APP_NAME,
             menu=self._build_menu(),
         )
@@ -522,46 +726,73 @@ class BatteryTray:
             ),
             pystray.MenuItem(
                 lambda item: i18n.tr("menu.language"),
-                pystray.Menu(
-                    pystray.MenuItem(
-                        i18n.LANGUAGE_NAMES["ru"],
-                        lambda icon, item: self._on_set_language(icon, "ru"),
-                        checked=lambda item: i18n.get_language() == "ru",
-                        radio=True,
-                    ),
-                    pystray.MenuItem(
-                        i18n.LANGUAGE_NAMES["en"],
-                        lambda icon, item: self._on_set_language(icon, "en"),
-                        checked=lambda item: i18n.get_language() == "en",
-                        radio=True,
-                    ),
-                ),
+                self._language_menu(),
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(lambda item: i18n.tr("menu.exit"), self._on_quit),
         )
 
+    def _language_menu(self) -> pystray.Menu:
+        """One radio item per supported language, built from ``i18n``."""
+
+        def action(code):
+            # pystray inspects the action's argument count, so the language
+            # is bound in a closure instead of a default argument.
+            def select(icon, item):
+                self._on_set_language(icon, code)
+
+            return select
+
+        return pystray.Menu(
+            *[
+                pystray.MenuItem(
+                    i18n.LANGUAGE_NAMES[code],
+                    action(code),
+                    checked=lambda item, code=code: (
+                        i18n.get_language() == code
+                    ),
+                    radio=True,
+                )
+                for code in i18n.LANGUAGES
+            ]
+        )
+
+    def _state_snapshot(
+        self,
+    ) -> tuple[Optional[BatteryReading], float, bool]:
+        """Consistent (last reading, last success, online) for other threads."""
+        with self._state_lock:
+            return self._last, self._last_ok, self._online
+
     def _display_name(self) -> str:
-        model = self._last.model if self._last else None
+        last, _, _ = self._state_snapshot()
+        model = last.model if last else None
         return f"LAMZU {model}" if model else APP_NAME
 
     def _menu_status(self) -> str:
-        if self._last is None:
+        last, last_ok, online = self._state_snapshot()
+        if last is None:
             return i18n.tr("status.no_mouse")
-        if self._online:
-            state = i18n.state_text(self._last.state, self._last.percent)
-            return f"{self._last.percent}% · {state}"
-        age = i18n.human_age(time.time() - self._last_ok)
-        return i18n.tr(
-            "status.offline", percent=self._last.percent, age=age
-        )
+        if online:
+            state = i18n.state_text(last.state, last.percent)
+            return f"{last.percent}% · {state}"
+        age = i18n.human_age(time.time() - last_ok)
+        return i18n.tr("status.offline", percent=last.percent, age=age)
 
     # --- опрос ------------------------------------------------------------
 
     def _worker(self) -> None:
-        self._poll()
+        self._poll_safely()
         while not self._stop.wait(self._interval()):
-            self._poll()
+            self._poll_safely()
+
+    def _poll_safely(self) -> bool:
+        """Keep the polling loop alive even if a poll raises unexpectedly."""
+        try:
+            return self._poll()
+        except Exception:
+            log.exception("battery poll failed")
+            return False
 
     def _watch_devices(self) -> None:
         """Сразу реагировать на подключение кабеля/донгла, не опрашивая мышь."""
@@ -574,21 +805,25 @@ class BatteryTray:
                     sorted(signature),
                     sorted(current),
                 )
-                signature = current
-                self._poll()
+                # Keep the old signature when the poll was skipped because
+                # another one holds the lock: the change must not be lost.
+                if self._poll_safely():
+                    signature = current
 
     def _interval(self) -> float:
-        if self._last is None or not self._online:
+        last, _, online = self._state_snapshot()
+        if last is None or not online:
             # Спящая/отключённая мышь или ещё нет первого ответа: пробуем
             # чаще, чтобы быстрее поймать пробуждение.
             return POLL_INTERVAL_OFFLINE
-        if self._last.charging:
+        if last.charging:
             return POLL_INTERVAL_CHARGING
         return POLL_INTERVAL
 
-    def _poll(self) -> None:
+    def _poll(self) -> bool:
+        """Read the battery once; False when another poll holds the lock."""
         if not self._poll_lock.acquire(timeout=5):
-            return
+            return False
         try:
             reading = read_battery()
             if reading is not None:
@@ -601,40 +836,48 @@ class BatteryTray:
                         name,
                         reading.protocol_text,
                     )
-                self._last = reading
-                self._last_ok = time.time()
-                self._online = True
+                with self._state_lock:
+                    self._last = reading
+                    self._last_ok = time.time()
+                    self._online = True
                 self._maybe_notify(reading)
             else:
-                if self._online:
+                with self._state_lock:
+                    was_online = self._online
+                    self._online = False
+                if was_online:
                     log.info("mouse did not respond (asleep or out of range)")
-                self._online = False
             self._apply()
             self._write_status()
             # Меню на Windows строится один раз, поэтому динамические
             # подписи (модель, процент) нужно обновлять вручную.
-            try:
-                self._icon.update_menu()
-            except Exception:
-                log.debug("could not update tray menu", exc_info=True)
+            self._sync_menu()
+            return True
         finally:
             self._poll_lock.release()
 
     def _apply(self) -> None:
-        age = time.time() - self._last_ok if self._last else 0
-        if self._last is None:
-            text, color = "?", COLOR_STALE
-        elif self._online:
-            text = str(self._last.percent)
+        # Re-read the theme on every poll: a switch between light and dark
+        # mode is picked up within one interval without a WM_SETTINGCHANGE
+        # hook, and the icon is rendered with the matching palette.
+        self._light_theme = taskbar_uses_light_theme()
+        colors = palette(self._light_theme)
+        last, last_ok, online = self._state_snapshot()
+        age = time.time() - last_ok if last else 0
+        if last is None:
+            text, color = "?", colors["stale"]
+        elif online:
+            text = str(last.percent)
             color = battery_color(
-                self._last.percent,
-                self._last.charging,
-                self._last.full,
+                last.percent,
+                last.charging,
+                last.full,
+                self._light_theme,
             )
         else:
-            # Показываем последнее значение светло-голубым, пока оно не устарело.
-            text = str(self._last.percent) if age < 900 else "?"
-            color = COLOR_STALE
+            # Показываем последнее значение приглушённым, пока оно не устарело.
+            text = str(last.percent) if age < 900 else "?"
+            color = colors["stale"]
 
         try:
             with self._icon_lock:
@@ -644,17 +887,18 @@ class BatteryTray:
             log.exception("could not update tray icon")
 
     def _tooltip(self) -> str:
+        last, last_ok, online = self._state_snapshot()
         name = self._display_name()
-        if self._last is None:
+        if last is None:
             return i18n.tr("tooltip.no_connection", name=name)
-        if self._online:
-            state = i18n.state_text(self._last.state, self._last.percent)
-            return f"{name}: {self._last.percent}% ({state})"
-        age = i18n.human_age(time.time() - self._last_ok)
+        if online:
+            state = i18n.state_text(last.state, last.percent)
+            return f"{name}: {last.percent}% ({state})"
+        age = i18n.human_age(time.time() - last_ok)
         return i18n.tr(
             "tooltip.offline",
             name=name,
-            percent=self._last.percent,
+            percent=last.percent,
             age=age,
         )
 
@@ -667,34 +911,61 @@ class BatteryTray:
             return
         if reading.full:
             if not self._full_notified:
-                self._notify(
+                delivered = self._notify(
                     i18n.tr(
                         "notify.full_body", name=name, percent=reading.percent
                     ),
                     i18n.tr("notify.full_title"),
                 )
-                self._full_notified = True
+                # A failed notification is retried on the next poll.
+                self._full_notified = delivered
             return
 
-        self._full_notified = False
+        # Hysteresis: replugging the cable at 99% must not repeat the
+        # "charged" balloon, so the flag is cleared only when the charge
+        # actually dropped.
+        if reading.percent < 95:
+            self._full_notified = False
         if reading.percent <= 15 and not self._low_notified:
-            self._notify(
+            delivered = self._notify(
                 i18n.tr(
                     "notify.low_body", name=name, percent=reading.percent
                 ),
                 i18n.tr("notify.low_title"),
             )
-            self._low_notified = True
+            self._low_notified = delivered
         elif reading.percent > 20:
             self._low_notified = False
 
-    def _notify(self, message: str, title: str) -> None:
+    def _notify(self, message: str, title: str) -> bool:
+        """Show a balloon; False when it could not be delivered."""
+        if not getattr(self._icon, "visible", False):
+            # The first poll runs before pystray finishes creating the icon.
+            log.debug("notification skipped: the tray icon is not ready")
+            return False
         try:
             self._icon.notify(message, title)
+            return True
         except Exception:
             log.debug("notification failed", exc_info=True)
+            return False
+
+    def _menu_labels(self) -> tuple[str, str]:
+        return (self._display_name(), self._menu_status())
+
+    def _sync_menu(self) -> None:
+        """Rebuild the tray menu only when its dynamic labels changed.
+
+        pystray destroys and recreates the native menu on every update, and on
+        Windows that can take the HMENU out from under an open popup. Polling
+        runs every 20 seconds, so the menu is rebuilt only when the model or
+        the status text really changed.
+        """
+        if self._menu_labels() != self._menu_signature:
+            self._refresh_menu()
 
     def _refresh_menu(self) -> None:
+        self._menu_signature = self._menu_labels()
         try:
             self._icon.update_menu()
         except Exception:
@@ -737,10 +1008,7 @@ class BatteryTray:
             update_mode="auto" if self._auto_update else "notify"
         )
         log.info("automatic updates = %s", self._auto_update)
-        try:
-            icon.update_menu()
-        except Exception:
-            log.debug("could not update tray menu", exc_info=True)
+        self._refresh_menu()
 
     def _on_open_release_page(self, icon, item) -> None:
         try:
@@ -797,7 +1065,7 @@ class BatteryTray:
 
     def _read_status(self) -> dict:
         try:
-            data = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+            data = json.loads(STATUS_FILE.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError, TypeError):
             return {}
         return data if isinstance(data, dict) else {}
@@ -807,19 +1075,38 @@ class BatteryTray:
             return
         _close_mutex(self._mutex)
         self._mutex = None
-        log.info("released the tray mutex for the updated instance")
+        log.info("released the tray mutex for the next instance")
 
-    def _reacquire_instance_mutex(self) -> bool:
+    def _reacquire_instance_mutex(self, timeout: float = 0.0) -> bool:
+        """Take the tray mutex back after the new instance was stopped.
+
+        ``timeout`` gives the killed child some time to release the mutex.
+        Only once this returns True is it safe to touch the exe on disk.
+        """
         if self._mutex is not None:
             return True
-        self._mutex = _acquire_mutex(MUTEX_TRAY)
-        if self._mutex is None:
-            log.error("could not reacquire the tray mutex after a failed update")
-        return self._mutex is not None
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            self._mutex = _acquire_mutex(MUTEX_TRAY)
+            if self._mutex is not None:
+                return True
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.2)
+        log.error("could not reacquire the tray mutex after a failed update")
+        return False
 
-    def _wait_for_new_instance(self, process, version: str) -> bool:
-        """Wait until the updated process reports that its tray is healthy."""
+    def _wait_for_new_instance(
+        self, process, version: str, started_at: float
+    ) -> bool:
+        """Wait until the updated process reports that its tray is healthy.
+
+        The status file must belong to this hand-off: a leftover file from an
+        earlier attempt that reported the same version and ``healthy: true``
+        would otherwise be accepted as proof of a successful start.
+        """
         deadline = time.monotonic() + UPDATE_READY_TIMEOUT
+        not_before = int(started_at) - 5  # tolerate a small clock step
         while time.monotonic() < deadline:
             if self._stop.is_set():
                 # The user asked to quit while the update was starting; let
@@ -833,13 +1120,46 @@ class BatteryTray:
                 return False
             status = self._read_status()
             if (
-                str(status.get("version") or "") == version
+                updater.same_version(
+                    str(status.get("version") or ""), version
+                )
                 and status.get("healthy") is True
+                and _as_int(status.get("heartbeat_unix")) >= not_before
             ):
                 return True
             time.sleep(0.4)
         log.warning("updated instance did not report readiness in time")
         return False
+
+    def _recover_missing_exe(
+        self,
+        target: Path,
+        backup_path: Path,
+        new_path: Path,
+        exc: BaseException,
+    ) -> str:
+        """Restore the exe after a failed replacement and return a reason.
+
+        ``replace_executable`` normally restores the file itself, but when
+        both replace operations fail the installation is left without
+        ``LamzuBattery.exe`` and the backup is the only copy left.
+        """
+        if target.is_file():
+            return str(exc)
+        log.error("the executable is missing after the failed update")
+        if updater.rollback_executable(target, backup_path, new_path):
+            log.info("restored the previous version after a failed replacement")
+            return (
+                "the update could not be installed; "
+                "the previous version was restored"
+            )
+        log.error(
+            "the executable is missing and the backup could not be restored"
+        )
+        return (
+            "the update failed and LamzuBattery.exe is missing; download "
+            "the release from GitHub"
+        )
 
     def _check_updates(self, manual: bool) -> bool:
         if not self._update_lock.acquire(blocking=False):
@@ -847,7 +1167,9 @@ class BatteryTray:
                 self._notify(
                     i18n.tr("update.busy"), i18n.tr("update.title")
                 )
-            return True
+            # Not a success: the loop must keep its retry counter, otherwise
+            # a concurrent manual check would reset a pending backoff.
+            return False
         try:
             # sys.executable указывает на реальный exe, даже если пользователь
             # перенёс программу в другую папку.
@@ -919,7 +1241,7 @@ class BatteryTray:
                 log.warning("update preflight failed: %s", exc)
                 self._last_update_error = str(exc)
                 self._notify_update_error(manual, exc, "preflight")
-                return True
+                return False
 
             try:
                 updater.download_update(
@@ -932,7 +1254,7 @@ class BatteryTray:
                 self._last_update_error = str(exc)
                 self._clear_progress()
                 self._notify_update_error(manual, exc, "download")
-                return True
+                return False
 
             self._clear_progress()
             if self._stop.is_set():
@@ -946,10 +1268,17 @@ class BatteryTray:
                 self._update_pending = False
                 log.warning("update replacement failed: %s", exc)
                 self._last_update_error = str(exc)
-                self._notify_update_error(manual, exc, "install")
-                return True
+                self._notify_update_error(
+                    manual,
+                    self._recover_missing_exe(
+                        target, backup_path, new_path, exc
+                    ),
+                    "install",
+                )
+                return False
 
             log.info("update installed, restarting %s", target)
+            started_at = time.time()
             try:
                 process = subprocess.Popen(
                     [str(target), "--wait-for-instance"],
@@ -961,11 +1290,20 @@ class BatteryTray:
                 )
             except Exception as exc:
                 log.exception("could not start the updated application")
-                updater.rollback_executable(target, backup_path, new_path)
+                restored = updater.rollback_executable(
+                    target, backup_path, new_path
+                )
                 self._update_pending = False
                 self._last_update_error = str(exc)
-                self._notify_update_error(manual, exc, "install")
-                return True
+                reason = str(exc)
+                if not restored:
+                    reason = (
+                        "the updated version could not be started and the "
+                        "previous version could not be restored; download "
+                        "the release from GitHub"
+                    )
+                self._notify_update_error(manual, reason, "install")
+                return False
 
             self._notify(
                 i18n.tr("update.installing", version=info.version),
@@ -974,7 +1312,7 @@ class BatteryTray:
             # The old mutex must be released before the new process can start
             # its tray. The old process remains alive as a short watchdog.
             self._release_instance_mutex()
-            if self._wait_for_new_instance(process, info.version):
+            if self._wait_for_new_instance(process, info.version, started_at):
                 log.info("updated instance is healthy, stopping the old one")
                 self._handed_off = True
                 self._stop.set()
@@ -982,18 +1320,33 @@ class BatteryTray:
                 return True
 
             log.error("updated instance failed the health check; rolling back")
-            try:
-                if process.poll() is None:
-                    process.terminate()
-                    process.wait(timeout=5.0)
-            except Exception:
-                log.debug("could not stop the unhealthy instance", exc_info=True)
+            # The child of the bootloader is the real application: it has to
+            # be gone before the files are replaced, otherwise it keeps
+            # running from a renamed image and holds the tray mutex.
+            stopped = _stop_process_tree(process)
+            took_over = self._reacquire_instance_mutex(timeout=10.0)
+            if not took_over:
+                self._update_pending = False
+                log.error(
+                    "updated instance still owns the tray mutex; files left intact"
+                )
+                self._notify_update_error(
+                    manual,
+                    "the updated instance could not be stopped; "
+                    "restart LAMZU Battery to finish the update",
+                    "health",
+                )
+                return True
 
             restored = updater.rollback_executable(
                 target, backup_path, new_path
             )
+            self._update_pending = False
             if restored:
                 log.info("restored the previous version at %s", target)
+                # The restored instance needs the mutex; we keep running only
+                # as a watchdog until it reports readiness.
+                self._release_instance_mutex()
                 try:
                     subprocess.Popen(
                         [str(target), "--wait-for-instance"],
@@ -1005,15 +1358,22 @@ class BatteryTray:
                 except Exception:
                     log.exception("could not restart the previous version")
                     self._reacquire_instance_mutex()
+                reason = (
+                    "the new version did not start correctly; "
+                    "the previous version was restored"
+                )
             else:
-                self._reacquire_instance_mutex()
-            self._update_pending = False
-            self._notify_update_error(
-                manual,
-                "the new version did not start correctly; "
-                "the previous version was restored",
-                "health",
-            )
+                log.error(
+                    "the previous version could not be restored "
+                    "(new instance stopped: %s)",
+                    stopped,
+                )
+                reason = (
+                    "the new version did not start correctly and the "
+                    "previous version could not be restored; download "
+                    "the release from GitHub"
+                )
+            self._notify_update_error(manual, reason, "health")
             if self._handed_off:
                 time.sleep(0.5)
                 self._stop.set()
@@ -1034,26 +1394,31 @@ class BatteryTray:
             # During hand-off the new instance owns status.json; writing the
             # old version here would confuse its health check.
             return
+        if running and self._stop.is_set():
+            # A poll that finished during shutdown must not resurrect the
+            # "running" marker after the final write.
+            return
+        last, last_ok, online = self._state_snapshot()
         payload = {
             "app": APP_NAME,
             "version": APP_VERSION,
             "pid": os.getpid(),
             "display_name": self._display_name(),
             "language": i18n.get_language(),
-            "model": self._last.model if self._last else None,
-            "protocol": self._last.protocol if self._last else None,
-            "product": self._last.product if self._last else None,
+            "model": last.model if last else None,
+            "protocol": last.protocol if last else None,
+            "product": last.product if last else None,
             "running": running,
             "healthy": bool(self._healthy),
             "heartbeat_unix": int(time.time()),
-            "online": self._online,
-            "percent": self._last.percent if self._last else None,
-            "state": self._last.state if self._last else None,
-            "raw_percent": self._last.raw_percent if self._last else None,
-            "voltage_mv": self._last.voltage_mv if self._last else None,
-            "charging": bool(self._last and self._last.charging),
-            "full": bool(self._last and self._last.full),
-            "updated_unix": int(self._last_ok) if self._last else None,
+            "online": online,
+            "percent": last.percent if last else None,
+            "state": last.state if last else None,
+            "raw_percent": last.raw_percent if last else None,
+            "voltage_mv": last.voltage_mv if last else None,
+            "charging": bool(last and last.charging),
+            "full": bool(last and last.full),
+            "updated_unix": int(last_ok) if last else None,
             "polled_unix": int(time.time()),
             "update_last_check_unix": (
                 int(self._last_update_check_at)
@@ -1062,10 +1427,13 @@ class BatteryTray:
             ),
             "update_last_error": self._last_update_error,
         }
+        tmp: Optional[Path] = None
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             with self._status_lock:
-                tmp = STATUS_FILE.with_suffix(".tmp")
+                tmp = STATUS_FILE.with_name(
+                    f"{STATUS_FILE.name}.{os.getpid()}.tmp"
+                )
                 tmp.write_text(
                     json.dumps(payload, ensure_ascii=False, indent=2),
                     encoding="utf-8",
@@ -1073,6 +1441,11 @@ class BatteryTray:
                 os.replace(tmp, STATUS_FILE)
         except OSError:
             log.debug("could not write status file", exc_info=True)
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def _mark_healthy(self) -> None:
         if self._stop.is_set():
@@ -1082,6 +1455,14 @@ class BatteryTray:
         self._start_backup_cleanup()
 
     def _start_backup_cleanup(self) -> None:
+        """Remove the rollback copy once the new version has proven itself.
+
+        The copy is kept for ``BACKUP_GRACE_PERIOD`` on purpose: the previous
+        version is the only way to recover from a defect that appears after
+        the five second health check. If the application stops before the end
+        of the grace period the copy stays on disk and is removed either by
+        the next run or before the next update.
+        """
         if self._cleanup_started:
             return
         self._cleanup_started = True
@@ -1089,11 +1470,20 @@ class BatteryTray:
         if executable is None:
             return
         threading.Thread(
-            target=updater.cleanup_backup,
+            target=self._cleanup_backup_later,
             args=(executable,),
             name="update-cleanup",
             daemon=True,
         ).start()
+
+    def _cleanup_backup_later(self, executable: Path) -> None:
+        if self._stop.wait(BACKUP_GRACE_PERIOD):
+            return
+        updater.cleanup_backup(executable)
+        log.info(
+            "removed the rollback copy after %d minutes of uptime",
+            BACKUP_GRACE_PERIOD // 60,
+        )
 
     # --- действия меню ----------------------------------------------------
 
@@ -1106,10 +1496,7 @@ class BatteryTray:
             log.info("autostart = %s", autostart_enabled())
         except OSError:
             log.exception("could not change autostart")
-        try:
-            icon.update_menu()
-        except Exception:
-            pass
+        self._refresh_menu()
 
     def _on_open_logs(self, icon, item) -> None:
         try:
@@ -1149,10 +1536,7 @@ class BatteryTray:
         # Обновляем подсказку и все подписи меню.
         self._apply()
         self._write_status()
-        try:
-            icon.update_menu()
-        except Exception:
-            log.debug("could not update tray menu", exc_info=True)
+        self._refresh_menu()
 
     def _on_quit(self, icon, item) -> None:
         self._stop.set()
@@ -1216,12 +1600,26 @@ def main() -> int:
         "--debug", action="store_true", help=i18n.tr("cli.debug_help")
     )
     parser.add_argument(
+        "--version",
+        action="version",
+        version=APP_VERSION,
+        help=i18n.tr("cli.version_help"),
+    )
+    parser.add_argument(
         "--wait-for-instance", action="store_true", help=argparse.SUPPRESS
     )
     args = parser.parse_args()
 
-    setup_logging(args.debug)
+    # The crash hook goes first: a failure while setting up logging must be
+    # reported instead of ending a windowed process silently.
     install_exception_logging()
+    setup_logging(args.debug)
+    log.info("data folder: %s", DATA_DIR)
+    if _DATA_DIR_FALLBACK is not None:
+        log.warning(
+            "the folder next to the application is not writable, using %s",
+            DATA_DIR,
+        )
     executable = updater.executable_path()
     log.info(
         "LAMZU Battery %s, executable %s",
@@ -1247,8 +1645,10 @@ def main() -> int:
         return 0
 
     if executable is not None:
-        # A stale .new.exe is safe to remove before the tray starts. The
-        # .old.exe backup is kept until this instance reports healthy.
+        # A stale .new.exe is safe to remove before the tray starts, and a
+        # rollback copy from an update more than a day old is not needed.
+        # A fresh .old.exe is kept for BACKUP_GRACE_PERIOD instead.
+        updater.cleanup_stale_backup(executable)
         updater.cleanup_download_files(executable, attempts=1)
 
     try:

@@ -105,3 +105,78 @@ def test_zero_wins_over_duplicate_entries(monkeypatch):
 def test_normalize_path_is_case_insensitive_and_strips_quotes():
     expected = os.path.normcase(os.path.normpath(r"C:\Tools\Lamzu.exe"))
     assert tv._normalize(' "C:\\Tools\\Lamzu.exe" ') == expected
+
+
+def test_entries_survive_an_enumeration_error(monkeypatch):
+    exe = r"C:\Tools\Lamzu.exe"
+
+    class _Key:
+        def __init__(self, name):
+            self.name = name
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def open_key(root, name, *args, **kwargs):
+        if name == tv.NOTIFY_ICON_KEY:
+            return _Key("root")
+        if name == "ok":
+            return _Key("ok")
+        raise OSError("unreadable key")
+
+    def enum_key(root, index):
+        if index == 0:
+            return "ok"
+        raise OSError("enumeration failed")
+
+    def query_value(key, name):
+        if key.name == "ok" and name == tv.EXECUTABLE_PATH:
+            return (exe, 1)
+        raise FileNotFoundError()
+
+    monkeypatch.setattr(tv.winreg, "OpenKey", open_key)
+    monkeypatch.setattr(tv.winreg, "QueryInfoKey", lambda key: (2, 0, 0))
+    monkeypatch.setattr(tv.winreg, "EnumKey", enum_key)
+    monkeypatch.setattr(tv.winreg, "QueryValueEx", query_value)
+
+    entries = tv._entries_for(exe)
+
+    assert [entry.key_name for entry in entries] == ["ok"]
+
+
+def test_manual_promotion_retries_after_a_write_error(monkeypatch):
+    _supported(monkeypatch)
+    calls = []
+    failures = [OSError("busy")]
+
+    def set_promoted(key):
+        if failures:
+            raise failures.pop(0)
+        calls.append(key)
+
+    monkeypatch.setattr(
+        tv, "_entries_for", lambda path: [tv.TrayEntry("entry", 0)]
+    )
+    monkeypatch.setattr(tv, "_set_promoted", set_promoted)
+    monkeypatch.setattr(tv, "_wait", lambda delay, stop: False)
+
+    assert tv.promote("C:/Lamzu.exe", retry_delays=(0.0,)) == tv.PROMOTED
+    assert calls == ["entry"]
+
+
+def test_manual_promotion_reports_a_persistent_error(monkeypatch):
+    _supported(monkeypatch)
+
+    def boom(key):
+        raise OSError("denied")
+
+    monkeypatch.setattr(
+        tv, "_entries_for", lambda path: [tv.TrayEntry("entry", None)]
+    )
+    monkeypatch.setattr(tv, "_set_promoted", boom)
+    monkeypatch.setattr(tv, "_wait", lambda delay, stop: False)
+
+    assert tv.promote("C:/Lamzu.exe", retry_delays=(0.0,)) == tv.ERROR
