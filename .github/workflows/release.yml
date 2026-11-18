@@ -21,13 +21,41 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
+      # The updater decides whether to install by comparing versions
+      # numerically and then waits for the new instance to report the same
+      # version in status.json. A tag that does not match APP_VERSION would
+      # therefore install and roll back forever, so fail the build early.
+      - name: Check version matches the tag
+        shell: pwsh
+        env:
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          $match = Select-String -Path version.py -Pattern 'APP_VERSION\s*=\s*"([^"]+)"'
+          if (-not $match) { throw "APP_VERSION not found in version.py" }
+          $version = $match.Matches[0].Groups[1].Value
+          if ("v$version" -ne $env:TAG) {
+            throw "version.py says $version but the tag is $($env:TAG)"
+          }
+          Write-Host "version.py $version matches tag $($env:TAG)"
+
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
 
-      - name: Install build dependencies
-        run: python -m pip install -r requirements-build.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      # A tag push does not run the tests workflow, so the release itself has
+      # to be gated on the same checks before anything is published.
+      - name: Lint
+        run: python -m ruff check .
+
+      - name: Run tests
+        run: >
+          python -m pytest -q
+          --cov=app --cov=lamzu --cov=updater --cov=i18n --cov=tray_visibility
+          --cov-fail-under=55
 
       - name: Build exe
         run: >

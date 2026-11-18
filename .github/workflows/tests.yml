@@ -20,11 +20,20 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt
 
+      - name: Lint
+        run: python -m ruff check .
+
       - name: Run tests
-        run: python -m pytest -q
+        run: >
+          python -m pytest -q
+          --cov=app --cov=lamzu --cov=updater --cov=i18n --cov=tray_visibility
+          --cov-report=term-missing --cov-fail-under=55
 
       - name: Check sources compile
-        run: python -m py_compile app.py lamzu.py diagnose.py updater.py version.py
+        run: >
+          python -m compileall -q
+          app.py lamzu.py i18n.py tray_visibility.py updater.py
+          diagnose.py make_icon.py version.py tests
 
   build:
     needs: test
