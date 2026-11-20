@@ -36,37 +36,31 @@ jobs:
         env:
           TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
-          $match = Select-String -Path Rust\Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"'
-          if (-not $match) { throw "version not found in Rust/Cargo.toml" }
+          $match = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"'
+          if (-not $match) { throw "version not found in Cargo.toml" }
           $version = $match.Matches[0].Groups[1].Value
           if ("v$version" -ne $env:TAG) {
-            throw "Rust/Cargo.toml says $version but the tag is $($env:TAG)"
+            throw "Cargo.toml says $version but the tag is $($env:TAG)"
           }
           Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
-          Write-Host "Rust/Cargo.toml $version matches tag $($env:TAG)"
+          Write-Host "Cargo.toml $version matches tag $($env:TAG)"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: Rust
 
       - name: Formatting
-        working-directory: Rust
         run: cargo fmt --check
 
       - name: Lints
-        working-directory: Rust
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Tests
-        working-directory: Rust
         run: cargo test --locked
 
       - name: Build
-        working-directory: Rust
         run: cargo build --release --locked
 
       - name: Verify the version inside the binary
@@ -75,7 +69,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           $out = Join-Path $env:RUNNER_TEMP 'version.txt'
-          $process = Start-Process -FilePath 'Rust\target\release\LamzuBattery.exe' `
+          $process = Start-Process -FilePath 'target\release\LamzuBattery.exe' `
             -ArgumentList '--version' -Wait -NoNewWindow `
             -RedirectStandardOutput $out -PassThru
           if ($process.ExitCode -ne 0) { throw "LamzuBattery --version exited with $($process.ExitCode)" }
@@ -89,7 +83,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item Rust\target\release\LamzuBattery.exe dist\LamzuBattery.exe
+          Copy-Item target\release\LamzuBattery.exe dist\LamzuBattery.exe
           $hash = (Get-FileHash dist\LamzuBattery.exe -Algorithm SHA256).Hash.ToLower()
           "$hash  LamzuBattery.exe" | Out-File -Encoding ascii dist\SHA256SUMS.txt
           Get-Content dist\SHA256SUMS.txt
