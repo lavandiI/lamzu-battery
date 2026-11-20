@@ -1,11 +1,14 @@
 # Python 1.5.11 против Rust 1.6.0: измерения
 
+Сравнение зафиксировано до того, как Python-версия была удалена из репозитория
+(её исходники остались в истории git).
+
 Обе версии запускались на одной машине (Windows 11), с одним и тем же донглом
 `3554:F50D` и мышью LAMZU Thorn, которая отдавала 89 %. Сравниваются именно
 поставляемые артефакты — то, что видит пользователь:
 
 - **Python**: `dist\LamzuBattery.exe`, PyInstaller onefile, версия 1.5.11.
-- **Rust**: `Rust\dist\LamzuBattery.exe`, release (`lto = "fat"`,
+- **Rust**: `dist\LamzuBattery.exe`, release (`lto = "fat"`,
   `opt-level = "s"`, `panic = "abort"`), версия 1.6.0.
 
 ## Методика

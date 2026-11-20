@@ -1,7 +1,7 @@
 # Проверка Rust-сборки на живой системе
 
 Дата: 20.11.2026. Windows 11, LAMZU Thorn через донгл `3554:F50D`, сборка
-`Rust\dist\LamzuBattery.exe` 1.6.0 (release, `panic = "abort"`).
+`dist\LamzuBattery.exe` 1.6.0 (release, `panic = "abort"`).
 
 | Проверка | Как проверялось | Результат |
 | --- | --- | --- |
