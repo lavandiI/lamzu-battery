@@ -1,305 +1,198 @@
-# LAMZU Battery
+# LAMZU Battery — Rust implementation
 
-<img src="docs/icon.png" width="96" align="right" alt="LAMZU Battery">
-
-[![release](https://img.shields.io/github/v/release/lavandiI/lamzu-battery?label=release)](https://github.com/lavandiI/lamzu-battery/releases/latest)
-[![tests](https://github.com/lavandiI/lamzu-battery/actions/workflows/tests.yml/badge.svg)](https://github.com/lavandiI/lamzu-battery/actions/workflows/tests.yml)
-[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)](#)
-
-**English** | [Русский](README.ru.md)
-
-A tiny battery indicator for LAMZU mice that lives in the Windows system tray.
-It talks directly to the USB dongle or cable, requires no driver and does not
-need the official Lamzu software to be running.
-
-**[Download LamzuBattery.exe for Windows 10/11](https://github.com/lavandiI/lamzu-battery/releases/latest/download/LamzuBattery.exe)**
-
----
+A battery indicator for LAMZU mice in the Windows system tray, rewritten in Rust
+from the Python original in the parent directory. The behaviour, the on-disk
+formats and the release contract are intentionally identical, so the two builds
+are interchangeable for users and for the self-updater.
 
 ![Tray icon examples](docs/preview.png)
 
-The app is universal: the model is detected from VID/PID and the product
-string, and the protocol from the control HID interface. Both known Lamzu
-families are supported:
+The digits are rendered from the system fonts at runtime: two- and three-digit
+values use Bahnschrift's bold condensed instance, a single digit uses Segoe UI
+Bold, and the palette follows the taskbar theme. `cargo run --example preview`
+regenerates the image above.
 
-- **Compx** — Thorn, Atlantis, Maya and other Compx/Nordic mice;
-- **Aurora** — Maya X, Inca, Paro, Maya Champion and other recent models.
+## Requirements
 
-Tested on a LAMZU Thorn while charging over cable (`3554:F50F`) and through the
-1K dongle (`3554:F50D`), both Compx. Aurora support is based on public protocol
-descriptions
-([mouse_tray](https://github.com/Fan4Metal/mouse_tray),
-[lamzu-ctl](https://github.com/anany1702/lamzu-ctl)), but has not been tested on
-real Aurora hardware here.
+- Windows 10 or 11, x64.
+- Rust 1.95 or newer with the `x86_64-pc-windows-msvc` toolchain (`rustup`).
+- MSVC Build Tools (the HID library contains a small C component).
 
-## Features
-
-- battery percentage as **large digits** directly on the tray icon;
-- a condensed font is used for two- and three-digit values, so the digits
-  stay large;
-- **precise percentage with 1% steps** for Compx while discharging: it is
-  calculated from the battery voltage using the same curve as the official
-  LAMZU software; while charging above 80% the device's 5% level is used, and
-  100% is shown only when the device itself reports raw level 100 — otherwise
-  the top is capped at 99%;
-- bold colours without an outline: blue — normal, red — below 30%,
-  dark green — charging, light blue — no fresh data; on a light taskbar the
-  palette switches to darker shades so the digits stay readable;
-- **UI language switch** between English and Russian (menu → Language); the
-  choice is remembered, and the system language is used on first run;
-- **automatic updates**: on startup and every six hours the app checks GitHub
-  Releases, verifies the SHA-256 of the new exe, replaces the current file
-  wherever it is located, checks that the new instance started correctly and
-  keeps the rollback copy for about an hour; automatic installation can be
-  disabled in the menu, and updates can also be checked manually;
-- tooltip with model, percentage and state (`discharging`, `charging`, `full`);
-- the menu shows the detected model, for example `LAMZU Thorn`;
-- notifications on low battery and when fully charged;
-- on Windows 11 22H2+ the tray icon is pinned to the taskbar automatically
-  unless you hid it yourself; **Show icon on taskbar** restores it manually.
-  This writes `IsPromoted` under the undocumented
-  `HKCU\Control Panel\NotifyIconSettings` key, so it is always best-effort;
-- start with Windows;
-- detects cable/dongle plug and unplug immediately and refreshes the state;
-- no administrator rights and nothing installed system-wide.
-
-Updates every **5 minutes**. While charging, it checks once a minute so it does
-not miss 100%. If the mouse is asleep and does not answer, it retries every
-20 seconds — including before the first reading after startup. Cable and dongle
-changes are watched separately and refresh the state immediately. You can also
-press **Refresh battery manually** in the menu at any time.
-
-## Quick start
-
-1. Download `LamzuBattery.exe` from the
-   [Releases](https://github.com/lavandiI/lamzu-battery/releases/latest) page.
-   Python and installation are not required — it is a single executable.
-2. Run it. On Windows 11 the app asks Explorer to pin the icon to the
-   taskbar. If it is still hidden under "^", use **Show icon on taskbar** in
-   the menu or enable it in Settings → Taskbar.
-3. Right-click the icon for the menu: refresh, autostart, data folder, release
-   page, update settings and exit.
-
-You do not need to run the official Lamzu software: mouse settings are stored on
-the device. The file is unsigned, so Windows SmartScreen may show a warning —
-this is normal for small open-source projects.
-
-## Supported models
-
-| Family | Examples | Protocol | Status |
-| --- | --- | --- | --- |
-| Compx | Thorn, Atlantis, Maya, 1K/4K/8K dongles `3554:F50D/F50F/F510` | report ID 8, usage page `0xFF02` | Thorn (cable and 1K dongle) tested; others use the common Compx protocol |
-| Aurora | Maya X (`373E:001E/001C`), Inca (`37B0:0010/0009`), Paro, Maya Champion | feature report, usage page `0xFFFF`, interface 2 | based on the public protocol, not tested on hardware |
-
-The model comes from the product string (`LAMZU THORN` → `Thorn`) or from a
-table of known VID:PIDs. If the mouse is connected through a dongle that
-identifies itself simply as `Receiver`, the app shows the neutral
-`LAMZU Battery` name. With a cable connected the model is usually detected more
-reliably.
-
-## Why the value sometimes turns light blue
-
-The mouse sleeps when idle and does not answer queries until it is moved. The
-app shows the last known value in light blue and retries every 20 seconds. Move
-the mouse and press **Refresh battery manually** — the value updates
-immediately. After a successful reading, the next normal poll is in 5 minutes.
-This is a hardware limitation, not a bug.
-
-## Where data is stored
-
-Next to the executable:
-
-```
-data\status.json   — last state and update health marker
-data\settings.json — selected UI language and update mode
-data\app.log       — log
-```
-
-If the executable directory is not writable (for example, `Program Files`),
-`%LOCALAPPDATA%\LamzuBattery` is used instead.
-
-## Autostart
-
-Menu → **Start with Windows**. Adds a `LamzuBattery` value under
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Pressing it again disables
-autostart. Administrator rights are not required.
-
-On the first run of the new version, the old `LamzuThornBattery` autostart entry
-is migrated to `LamzuBattery` automatically.
-
-## Updates
-
-About 8 seconds after startup, and then every six hours, the app asks the
-GitHub Releases API for the latest version. If it is newer:
-
-1. it first checks that the folder with the exe is writable and has enough
-   free space, so a protected folder fails before a large download;
-2. the release asset `LamzuBattery.exe` is downloaded next to the currently
-   running exe — the path is taken from the running process, so the app can
-   live in any folder; download progress is shown in the tooltip;
-3. the SHA-256 published by GitHub is verified;
-4. the current exe is renamed to `LamzuBattery.old.exe`, the new one takes its
-   place, and the app restarts itself;
-5. the new instance reports that its tray is healthy within 30 seconds; the
-   previous exe is kept next to it as `LamzuBattery.old.exe` for about an hour
-   (and removed before the next update), so a broken update can be rolled back
-   by hand even if the defect shows up later. If the new instance fails to
-   start, the old exe is restored automatically and the error is written to the
-   log.
-
-Transient network/GitHub errors are retried after 1, 5 and 15 minutes, then
-after 1 hour before returning to the normal six-hour schedule. The rollback
-copy is removed about an hour after a successful start and, on a later start,
-once it is older than 24 hours.
-
-The **Install updates automatically** menu item can be switched off. In that
-mode the app only notifies about a new version; **Check for updates** installs
-it on demand, and an **Install X.Y.Z** item appears while an update is
-available. The current version and exe path are shown by `python diagnose.py`.
-
-The release asset must carry a SHA-256 `digest` in the GitHub API response; a
-release without it is refused on purpose, so an update can never be installed
-unverified.
-
-No administrator rights are needed when the exe is in a user-writable folder.
-If the folder is protected (for example, `Program Files`) or the exe was moved
-somewhere read-only, the preflight check reports it and the app keeps running;
-download the new version manually in that case.
-
-## Uninstall
-
-1. Menu → **Exit**.
-2. If autostart was enabled, turn it off in the menu first.
-3. Delete the program folder.
-
-## How it works
-
-No driver is needed: the mouse or dongle exposes a regular HID interface with a
-vendor-defined usage page. Only read-only battery queries are used, just like
-the official software.
-
-### Compx
-
-| Field | Value |
-| --- | --- |
-| VID:PID | `3554:F50D` (1K dongle), `3554:F50F` (cable/charging), `3554:F510` (4K/8K dongle, tentative) |
-| HID usage page | `0xFF02` |
-| Report ID | `8`, 17 bytes |
-| Command | `4` — battery / charging status |
-| Request | `08 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 49` |
-| Response | `08 04 00 00 00 02 <level> <state> <voltage hi> <voltage lo> ... <checksum>` |
-| State | `0` — discharging, `1` — charging, `2` — full |
-| Voltage | bytes 8–9, big-endian millivolts |
-| Level | byte 6, coarse percentage in 5% steps (fallback) |
-
-Checksum: `(0x55 - sum(first 16 bytes)) & 0xFF`.
-
-The voltage is converted to a percentage with the official `BatteryParam`
-curve from LAMZU's `Config.ini`, interpolated to 1% steps. If the voltage is
-missing or implausible, the app falls back to the coarse level byte.
-
-### Aurora
-
-| Field | Value |
-| --- | --- |
-| VID:PID | `373E:001E/001C` (Maya X), `37B0:0010/0009` (Inca), Paro, Maya Champion |
-| HID usage page | `0xFFFF`, interface `2` |
-| Report | 65-byte feature report with report ID `0` |
-| Current command | `0x83` at byte 6 |
-| Legacy command | `0x8F` at byte 3 (fallback) |
-| Response | tag `0xA1`; state and percent at bytes 7/8 (current) or 5/6 (legacy) |
-| State | `0` — discharging, `1` — charging, `2` — full |
-
-The commands only read state. Settings, DPI, profiles, polling rate and firmware
-are not modified.
-
-## Building from source
-
-Requires Python 3.10+ and internet access to install packages:
+## Build
 
 ```bat
-git clone https://github.com/lavandiI/lamzu-battery.git
-cd lamzu-battery
-python -m pip install -r requirements-dev.txt
-python make_icon.py
 build.bat
 ```
 
-Result: `dist\LamzuBattery.exe` (a single file, no Python installation needed).
+The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+`cargo test`, then `cargo build --release --locked` and copies the result to
+`dist\LamzuBattery.exe`.
 
-Run from source:
-
-```bat
-pythonw app.py
-```
-
-Tests (protocol parsers and request layouts, no hardware access):
+Manual equivalent:
 
 ```bat
-python -m pytest -q
+cargo build --release --locked
 ```
 
-Lint (ruff is installed by `requirements-dev.txt`):
+## Run
 
 ```bat
-python -m ruff check .
+dist\LamzuBattery.exe
 ```
 
-Diagnostics (lists all Lamzu HID interfaces, model and protocol, and tries to
-read the battery):
+Useful switches:
+
+| Switch | Meaning |
+| --- | --- |
+| `--debug` | verbose log |
+| `--diagnose [--raw] [--lang ru\|en]` | print HID interfaces, raw reports and the battery reading, then exit |
+| `--version`, `--help` | print and exit |
+| `--wait-for-instance` | internal: wait up to 45 s for the previous instance to release the tray mutex |
+
+## Tests
 
 ```bat
-python diagnose.py
+cargo test
 ```
 
-## Limitations
+The suite covers the protocol parsers (including property-based tests that feed
+arbitrary bytes), the battery voltage curve, i18n and duration wording, settings
+and status files, the notification hysteresis, the update preflight/download/
+verify/replace/rollback paths (with a local HTTP server), interface ranking, tray
+promotion decisions, icon rendering and the "no `unsafe` outside `src/win`" rule.
 
-- Windows only.
-- Aurora is implemented from public descriptions and has not been tested on a
-  real Aurora mouse. If your model does not respond, please attach the output of
-  `python diagnose.py` to an issue.
-- Compx 4K/8K dongle support (`F510`) is tentative: the Compx protocol is
-  usually the same, but it has not been tested on that specific dongle.
-- The model may not be detected through a dongle that identifies itself as
-  `Receiver`; the battery percentage is still read.
-- If the mouse is off or the dongle is unplugged, the app shows `?`.
-- If the app closes unexpectedly, check `data\app.log` and `data\crash.log`;
-  unhandled exceptions and native faults are written there.
-- Antivirus software may flag an unsigned PyInstaller executable — this is a
-  common warning for self-built applications.
+Tests that need the live system (network, registry, notifications) are ignored
+by default:
 
-## Troubleshooting
+```bat
+cargo test --test live -- --ignored --nocapture
+```
 
-- **The icon shows `?`** — the mouse is off, asleep or out of range. Move it and
-  use **Refresh battery manually**; the app also retries every 20 seconds.
-- **The update left two icons or did not finish** — a failed update keeps the
-  previous executable as `LamzuBattery.old.exe`. Close the app, rename that file
-  to `LamzuBattery.exe` and start it again; the details are in `data\app.log`.
-- **The app does not start** — check `data\app.log` and `data\crash.log` next to
-  the exe; the log also names the data folder it uses. `python diagnose.py`
-  prints the version, the exe path and every Lamzu HID interface.
-- **The model is not detected** — a dongle may report itself as `Receiver`, or
-  an Aurora model may use a different report layout; the battery is still read.
-  Attach the output of `python diagnose.py` to an issue.
-- **Settings are not remembered** — the app needs write access to its `data`
-  folder; if it is read-only, settings live in `%LOCALAPPDATA%\LamzuBattery`.
+## Measured performance
 
-## Alternatives
+[`docs/benchmark.md`](docs/benchmark.md) compares the shipped Python 1.5.11
+executable with this build on the same machine and the same mouse:
+| | Python 1.5.11 | Rust 1.6.0 |
+| --- | ---: | ---: |
+| Download size | 16.33 MiB | **2.61 MiB** |
+| Temporary extraction | 31.4 MiB, 69 files | **none** |
+| Ready after start | 700 ms | **301 ms** |
+| First battery reading | 700 ms | **301 ms** |
+| Peak private memory | 27.9 MiB | **5.6 MiB** |
+| Second instance exit | 647 ms | **20 ms** |
+| `--diagnose` | 200 ms | **96 ms** |
+| Idle CPU (one core) | 0.2–0.3 % | 0.2–0.3 % |
 
-If you do not want to build it yourself, there are universal tray indicators:
-[HaloBattery](https://github.com/HeyOkay/HaloBattery),
-[mouse_tray](https://github.com/Fan4Metal/mouse_tray) and
-[lamzu-ctl](https://github.com/anany1702/lamzu-ctl). This project has few
-dependencies and is focused specifically on Lamzu.
+Startup CPU drops by 4–7×; steady-state CPU is unchanged because both builds
+enumerate HID interfaces every five seconds, and that behaviour is kept for
+parity.
 
-## Contributing
+Live checks on real hardware — every menu action, the `--wait-for-instance`
+hand-off, autostart, notifications, the crash log and the real GitHub API — are
+listed in [`docs/verification.md`](docs/verification.md).
 
-Issues and pull requests are welcome. If your Lamzu model is not detected or
-does not report its battery, include the output of `python diagnose.py` and the
-mouse model in the issue — it makes adding support much easier.
+## Architecture
 
-## License
+| Module | Responsibility |
+| --- | --- |
+| `main`, `cli` | entry point, argument parsing, console attachment for CLI modes |
+| `app` | threads, menu actions, status file, update flow |
+| `config` | data directory selection (`data` next to the exe, else `%LOCALAPPDATA%`, else `%TEMP%`) |
+| `settings` | `settings.json` and `status.json` (merge, BOM tolerance, atomic writes) |
+| `i18n` | English/Russian strings, placeholder rendering, localised durations |
+| `icons`, `core` | palette, icon fitting/rendering, poll cadence, notification hysteresis, labels |
+| `protocol` | Compx and Aurora parsers, voltage curve, interface discovery and ranking |
+| `hid` | `hidapi` wrapper behind the `HidPort` trait |
+| `tray` | tray icon and context menu on the main thread |
+| `notify` | WinRT toast notifications and the AppUserModelId registration |
+| `autostart`, `tray_visibility` | Run key and Windows 11 `NotifyIconSettings` promotion |
+| `updater` | versions, preflight, verified download, replacement, rollback, health check |
+| `diagnostics` | `--diagnose` output |
+| `logging`, `crash` | rotating log and crash reporting |
+| `win` | the only module allowed to contain `unsafe`: Win32 translation layer |
 
-[MIT](LICENSE). This project is not affiliated with LAMZU; it uses only
-publicly documented read-only HID battery queries.
+## Safety policy
+
+- `#![deny(unsafe_code)]` at the crate root; `unsafe` lives only in `src/win/`,
+  which carries `#[expect(unsafe_code, reason = …)]`.
+- Every `unsafe` block has a `// SAFETY:` comment naming the Win32 contract it
+  discharges; there are no public `unsafe fn`s, no `transmute`, no handwritten
+  `unsafe impl Send/Sync` and no zeroed POD where validity is not guaranteed.
+- Handles are stored as integers and closed exactly once; pointers never escape.
+- The unhandled-exception filter formats into a fixed stack buffer and writes a
+  pre-opened file: it does not allocate, lock or panic.
+- `tests/unsafe_boundary.rs` fails the build if `unsafe` appears outside
+  `src/win/`.
+
+Trusted dependencies (the TCB) are `windows-sys`, `winreg`, `hidapi`,
+`tray-icon`/`muda`, `swash`/`skrifa`, `ureq`, `serde`, `sha2` and
+`tauri-winrt-notification`.
+
+## Panic policy
+
+Panics mean "stop the program": the release profile uses `panic = "abort"` and
+worker loops do not swallow panics with `catch_unwind`. A panic is written to
+`data\crash.log`, shown in a message box on the UI thread, and the process exits;
+the autostart entry (or the user) starts a fresh instance. Recoverable failures
+(HID, network, files, registry) are `Result`s and never panic.
+
+## Data and compatibility
+
+`data\status.json`, `data\settings.json`, `data\app.log` and `data\crash.log`
+use the Python layout, including the `healthy`/`heartbeat_unix` fields read by
+the updater's health check. `LamzuBattery.old.exe`, `.new.exe` and `.part` files
+follow the same naming. Mutexes (`Local\LamzuBatteryTray`,
+`Local\LamzuBatteryUpdateFiles`) and registry keys are unchanged, so only one of
+the two builds can run at a time and the existing release asset
+(`LamzuBattery.exe`) updates both directions.
+
+The Rust build reports version `1.6.0`; a release tagged `v1.6.0` with the
+`LamzuBattery.exe` asset needs the SHA-256 `digest` that GitHub publishes for the
+updater to accept it.
+
+## Intentional differences from the Python version
+
+1. The menu is rebuilt only when its labels change (the Python build called
+   `update_menu()` from a worker, which could destroy an open popup).
+2. Notifications use WinRT toasts with a registered AppUserModelId instead of a
+   legacy balloon (Windows 10/11 renders both as toasts).
+3. Language entries are check items (muda has no radio item); the mutual
+   exclusion behaves the same.
+4. A product string containing "wireless" no longer demotes an interface to
+   "dongle" after the `… Mouse` suffix is stripped (AUDIT H2).
+5. No PyInstaller `_PYI_*` environment cleanup and no mandatory `taskkill /T`:
+   the process is a plain executable, with `kill` and a taskkill fallback.
+6. `--version` prints `LamzuBattery 1.6.0` (clap style) instead of `1.5.11`.
+7. `diagnose.py` became `LamzuBattery.exe --diagnose`.
+8. The executable carries the icon, version resource and a PerMonitorV2 manifest.
+
+## Deliberately not adopted
+
+- **Miri** cannot execute Win32 FFI, so it is not a gate; the unsafe surface is
+  instead small, isolated and reviewed.
+- **mimalloc** is unnecessary: there is no allocation hot path, and it would grow
+  the binary and the antivirus surface.
+- **`target-cpu=x86-64-v2`** would drop older Windows 10 machines; the tray app
+  has no hot loop that would benefit.
+- **Structured key/value logging** would break the documented `app.log` format.
+- **`clippy::pedantic`** is enabled selectively through `#[expect]`; the full
+  group produces mostly noise for the Win32 translation layer.
+- **CI and release workflows** live at the repository root and still build the
+  Python app; migrating them is a separate decision.
+
+## Manual acceptance checklist
+
+- [ ] `dist\LamzuBattery.exe` starts and shows the percentage in the tray.
+- [ ] Tray menu: refresh, autostart toggle, data folder, taskbar pin, release
+      page, update mode, check for updates, language switch, exit.
+- [ ] Language switch updates every label and survives a restart.
+- [ ] Tooltip shows model, percentage and state (or "no connection").
+- [ ] A second instance exits immediately.
+- [ ] `--diagnose` prints the interfaces and the battery reading.
+- [ ] `data\app.log` contains the startup lines; `data\status.json` reports
+      `healthy: true` a few seconds after start.
+- [ ] Exiting writes `running: false`.
+
+## Licence
+
+MIT, like the original project. The icon is the original project asset.

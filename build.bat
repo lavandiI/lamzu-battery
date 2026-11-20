@@ -2,27 +2,34 @@
 setlocal
 cd /d "%~dp0"
 
-echo [1/3] Installing dependencies...
-python -m pip install --quiet --upgrade -r requirements-dev.txt
-if errorlevel 1 goto error
+set "CARGO=%USERPROFILE%\.cargo\bin\cargo.exe"
+if not exist "%CARGO%" (
+    echo Rust is not installed. Install it from https://rustup.rs and try again.
+    exit /b 1
+)
 
-echo [2/3] Generating icon...
-python make_icon.py
-if errorlevel 1 goto error
+echo [1/5] Formatting check...
+"%CARGO%" fmt --check || goto error
 
-echo [3/3] Building exe...
-python -m PyInstaller --noconfirm --clean --onefile --windowed ^
-    --name LamzuBattery --icon icon.ico ^
-    --exclude-module tkinter --exclude-module numpy app.py
-if errorlevel 1 goto error
+echo [2/5] Lints...
+"%CARGO%" clippy --all-targets -- -D warnings || goto error
+
+echo [3/5] Tests...
+"%CARGO%" test || goto error
+
+echo [4/5] Release build...
+"%CARGO%" build --release --locked || goto error
+
+echo [5/5] Packaging...
+if not exist dist mkdir dist
+copy /y target\release\LamzuBattery.exe dist\LamzuBattery.exe >nul || goto error
+certutil -hashfile dist\LamzuBattery.exe SHA256 > dist\SHA256SUMS.txt
 
 echo.
 echo Done: %CD%\dist\LamzuBattery.exe
-pause
 exit /b 0
 
 :error
 echo.
 echo Build failed.
-pause
 exit /b 1
