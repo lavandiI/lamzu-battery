@@ -86,6 +86,48 @@ fn autostart_roundtrip() {
     }
 }
 
+/// A published release must be offered to the previous Python build (1.5.11).
+///
+/// This pins the update contract: a trusted asset URL, a SHA-256 digest and a
+/// sane size, so a broken release is caught before users update.
+#[test]
+#[ignore = "network: checks the published release contract"]
+fn published_release_is_offered_to_1_5_11() {
+    let info = check_for_update(
+        &UreqTransport,
+        &UrlPolicy::github(),
+        "1.5.11",
+        lamzu_battery::API_URL,
+    )
+    .expect("the GitHub API must answer")
+    .expect("a release newer than 1.5.11 must exist");
+
+    assert!(
+        lamzu_battery::updater::is_newer(&info.version, "1.5.11"),
+        "offered version {} is not newer",
+        info.version
+    );
+    assert!(
+        info.asset_url.contains("/releases/download/"),
+        "asset URL is not a release download: {}",
+        info.asset_url
+    );
+    assert!(UrlPolicy::github().trusted_asset(&info.asset_url));
+    assert!(
+        normalize_digest(Some(&info.digest)).is_some(),
+        "the release asset must carry a SHA-256 digest"
+    );
+    assert!(
+        info.asset_size > 1_000_000 && info.asset_size <= lamzu_battery::MAX_UPDATE_BYTES,
+        "unexpected asset size: {}",
+        info.asset_size
+    );
+    println!(
+        "offered {} ({} bytes, {})",
+        info.version, info.asset_size, info.asset_url
+    );
+}
+
 /// Show a real Windows toast.
 #[test]
 #[ignore = "shows a desktop notification"]
