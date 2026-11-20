@@ -35,6 +35,32 @@ jobs:
           app.py lamzu.py i18n.py tray_visibility.py updater.py
           diagnose.py make_icon.py version.py tests
 
+  rust:
+    # The shipped application is the Rust build, so it gets the same gate.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Rust
+
+      - name: Formatting
+        working-directory: Rust
+        run: cargo fmt --check
+
+      - name: Lints
+        working-directory: Rust
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        working-directory: Rust
+        run: cargo test --locked
+
   build:
     needs: test
     runs-on: windows-latest

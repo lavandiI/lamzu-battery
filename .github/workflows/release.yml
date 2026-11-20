@@ -6,85 +6,118 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to build, for example v1.5.4"
+        description: "Existing tag to build, for example v1.6.0"
         required: true
         type: string
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
-      # The updater decides whether to install by comparing versions
-      # numerically and then waits for the new instance to report the same
-      # version in status.json. A tag that does not match APP_VERSION would
-      # therefore install and roll back forever, so fail the build early.
+      # The updater compares versions numerically and then waits for the new
+      # instance to report the same version in status.json. A tag that does not
+      # match the crate version would install and roll back forever, so fail
+      # the build early.
       - name: Check version matches the tag
+        id: version
         shell: pwsh
         env:
           TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
-          $match = Select-String -Path version.py -Pattern 'APP_VERSION\s*=\s*"([^"]+)"'
-          if (-not $match) { throw "APP_VERSION not found in version.py" }
+          $match = Select-String -Path Rust\Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"'
+          if (-not $match) { throw "version not found in Rust/Cargo.toml" }
           $version = $match.Matches[0].Groups[1].Value
           if ("v$version" -ne $env:TAG) {
-            throw "version.py says $version but the tag is $($env:TAG)"
+            throw "Rust/Cargo.toml says $version but the tag is $($env:TAG)"
           }
-          Write-Host "version.py $version matches tag $($env:TAG)"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
+          Write-Host "Rust/Cargo.toml $version matches tag $($env:TAG)"
 
-      - uses: actions/setup-python@v6
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          python-version: "3.13"
-          cache: pip
+          components: rustfmt, clippy
 
-      - name: Install dependencies
-        run: python -m pip install -r requirements-dev.txt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Rust
 
-      # A tag push does not run the tests workflow, so the release itself has
-      # to be gated on the same checks before anything is published.
-      - name: Lint
-        run: python -m ruff check .
+      - name: Formatting
+        working-directory: Rust
+        run: cargo fmt --check
 
-      - name: Run tests
-        run: >
-          python -m pytest -q
-          --cov=app --cov=lamzu --cov=updater --cov=i18n --cov=tray_visibility
-          --cov-fail-under=55
+      - name: Lints
+        working-directory: Rust
+        run: cargo clippy --all-targets -- -D warnings
 
-      - name: Build exe
-        run: >
-          python -m PyInstaller --noconfirm --clean --onefile --windowed
-          --name LamzuBattery --icon icon.ico
-          --exclude-module tkinter --exclude-module numpy app.py
+      - name: Tests
+        working-directory: Rust
+        run: cargo test --locked
 
-      - name: Write checksum
+      - name: Build
+        working-directory: Rust
+        run: cargo build --release --locked
+
+      - name: Verify the version inside the binary
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'version.txt'
+          $process = Start-Process -FilePath 'Rust\target\release\LamzuBattery.exe' `
+            -ArgumentList '--version' -Wait -NoNewWindow `
+            -RedirectStandardOutput $out -PassThru
+          if ($process.ExitCode -ne 0) { throw "LamzuBattery --version exited with $($process.ExitCode)" }
+          $reported = (Get-Content $out -Raw).Trim()
+          if (-not $reported.EndsWith($env:VERSION)) {
+            throw "the binary reports '$reported', expected version $($env:VERSION)"
+          }
+          Write-Host $reported
+
+      - name: Package
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item Rust\target\release\LamzuBattery.exe dist\LamzuBattery.exe
           $hash = (Get-FileHash dist\LamzuBattery.exe -Algorithm SHA256).Hash.ToLower()
           "$hash  LamzuBattery.exe" | Out-File -Encoding ascii dist\SHA256SUMS.txt
           Get-Content dist\SHA256SUMS.txt
 
-      - name: Create draft release
+      # Tag pushes and manual runs must be idempotent: an existing release is
+      # completed or left untouched, never duplicated.
+      - name: Publish the release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $tag = "${{ inputs.tag }}"
-          } else {
-            $tag = "${{ github.ref_name }}"
+          $assets = @(gh release view $env:TAG --repo $env:GITHUB_REPOSITORY --json assets --jq '.assets[].name' 2>$null)
+          if ($LASTEXITCODE -eq 0) {
+            if ($assets -contains 'LamzuBattery.exe') {
+              Write-Host "release $($env:TAG) already carries LamzuBattery.exe; nothing to upload"
+              exit 0
+            }
+            gh release upload $env:TAG dist\LamzuBattery.exe dist\SHA256SUMS.txt `
+              --repo $env:GITHUB_REPOSITORY --clobber
+            if ($LASTEXITCODE -ne 0) { throw "gh release upload failed" }
+            exit 0
           }
-          $version = $tag.TrimStart("v")
-          gh release create $tag `
-            dist\LamzuBattery.exe `
-            dist\SHA256SUMS.txt `
+          gh release create $env:TAG dist\LamzuBattery.exe dist\SHA256SUMS.txt `
+            --repo $env:GITHUB_REPOSITORY `
             --verify-tag `
             --draft `
-            --title "LAMZU Battery $version" `
+            --title "LAMZU Battery $($env:VERSION)" `
             --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
