@@ -1,0 +1,84 @@
+[package]
+name = "lamzu-battery"
+version = "1.6.0"
+edition = "2024"
+rust-version = "1.95"
+description = "LAMZU mouse battery indicator for the Windows system tray"
+license = "MIT"
+repository = "https://github.com/lavandiI/lamzu-battery"
+keywords = ["lamzu", "battery", "tray", "hid", "windows"]
+categories = ["hardware-support", "gui"]
+build = "build.rs"
+
+[lib]
+name = "lamzu_battery"
+path = "src/lib.rs"
+
+[[bin]]
+name = "LamzuBattery"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.9", features = ["derive"] }
+hidapi = "2.6.7"
+log = "0.4.35"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+swash = { version = "0.2.10", features = ["std", "scale", "render"] }
+tauri-winrt-notification = "0.8.1"
+thiserror = "2.0.21"
+tray-icon = "0.26.1"
+ureq = "3.5.2"
+winreg = "0.56.0"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Kernel",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+winresource = "0.1"
+
+[dev-dependencies]
+png = "0.18"
+proptest = "1.6"
+static_assertions = "1"
+tempfile = "3"
+tiny_http = "0.12"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = "s"
+strip = "symbols"
+panic = "abort"
+incremental = false
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unused_lifetimes = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+allow_attributes_without_reason = "warn"
+clone_on_ref_ptr = "warn"
+deref_by_slicing = "warn"
+empty_drop = "warn"
+# Duplicate versions come from the tray/Windows dependency tree (thiserror 1 and
+# 2, windows-sys 0.52 and 0.61); they cannot be unified from this crate.
+multiple_crate_versions = "allow"
